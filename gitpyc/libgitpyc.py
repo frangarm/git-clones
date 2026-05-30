@@ -30,8 +30,8 @@ def main (argv=sys.argv[1:]):
         case "init": cmd_init(args)
         case _: print("Unkown Command")
 
-class GitRepository:
-    #A Git Repository
+class GitPyCRepository:
+    #A GitPyC Repository
     worktree = None
     gitdir = None
     conf = None
@@ -56,6 +56,7 @@ class GitRepository:
             if vers != 0:
                 raise Exception(f"Unsupported repositoryformatvesion: {vers}")
 
+#Helper functions for GitPyC Repositories
 def repo_path(repo, *path):
     return os.path.join(repo.gitdir, *path)
     
@@ -75,9 +76,26 @@ def repo_dir(repo, *path, mkdir=False):
         return path
         
     return None
+
+#Finds a repo's root
+def repo_find(path=".", required=True):
+    path = os.path.realpath(path)
     
+    if os.path.isdir(os.path.join(path, ".gitpyc")):
+        return GitPyCRepository(path)
+
+    parent = os.path.realpath(os.path.join(path, ".."))
+    
+    if parent == path:
+        if required:
+            raise Exception("No gitpyc directory.")
+        return None
+    
+    return repo_find(parent, required)
+
+#Creates repo
 def repo_create(path):
-    repo = GitRepository(path, True)
+    repo = GitPyCRepository(path, True)
         
     if os.path.exists(repo.worktree):
         if not os.path.isdir(repo.worktree):
@@ -117,6 +135,73 @@ def repo_default_config():
 argsp = argsubparser.add_parser("init", help="Initialize a new, empty repository")
 argsp.add_argument("path", metavar="directory", nargs="?", default=".", help="Where to create the repository.")
 
+#Command that creates a GitPyC repository
 def cmd_init (args):
     repo_create(args.path)
-    print(f"Initialized empty GitPyC repository in {os.path.realpath(args.path)}/.gitpyc")     
+    print(f"Initialized empty GitPyC repository in {os.path.realpath(args.path)}/.gitpyc")  
+    
+#Generic GitPyC Object class
+class GitPyCObject:
+    def __init__(self, data=None):
+        if data is not None:
+            self.deserialize(data)
+        else:
+            self.init()
+    
+    def serialize(self, repo=None):
+        raise Exception("Unimplemented.")
+    
+    def deserialize(self, data):
+        raise Exception("Unimplemented.")
+    
+    def init(self):
+        pass
+
+#GitPyC Object Helper Functions
+def object_read(repo, sha):
+    path = repo_file(repo, "objects", sha[0:2], sha[2:])
+    
+    if not os.path.isfile(path):
+        return None
+    
+    with open(path, "rb") as f:
+        raw = zlib.decompress(f.read())
+        
+    x = raw.find(b' ')
+    fmt = raw[0:x]
+    y = raw.find(b'\x00', x)
+    size = int(raw[x:y].decode("ascii"))
+    
+    if size != len(raw) - y - 1:
+        raise Exception(f"Malformed Object {sha}: bad length")
+
+    match fmt:
+        case b'commit': c = None
+        case b'tree': c = None
+        case b'tag': c = None
+        case b'blob': c = GitPyCBlob
+        case _: raise Exception(f"Unknown type {fmt.decode('ascii')} for object {sha}")
+    
+    return c(raw[y+1:])
+
+def object_write(obj, repo=None):
+    data = obj.serialize()
+    result = obj.fmt + b' ' + str(len(data)).encode() + b'\x00' + data
+    sha = hashlib.sha1(result).hexdigest()
+    
+    if repo:
+        path = repo_file(repo, "objects", sha[0:2], sha[2:], mkdir=True)
+        if not os.path.exists(path):
+            with open(path, 'wb') as f:
+                f.write(zlib.compress(result))
+    
+    return sha
+
+class GitPyCBlob(GitPyCObject):
+    fmt = b'blob'
+    
+    def serialize(self):
+        return self.blobdata
+    
+    def deserialize(self, data):
+        self.blobdata = data
