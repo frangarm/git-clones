@@ -30,6 +30,7 @@ def main (argv=sys.argv[1:]):
         case "init": cmd_init(args)
         case "cat-file": cmd_cat_file(args)
         case "hash-object": cmd_hash_object(args)
+        case "log": cmd_log(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -303,3 +304,42 @@ class GitPyCCommit(GitPyCObject):
     
     def init(self):
         self.kvlm = dict()
+
+argsp = argsubparser.add_parser("log", help="Display history of a given commit.")
+argsp.add_argument("commit", default="Head", nargs="?")
+
+def cmd_log(args):
+    repo = repo_find()
+    print("diagraph gitpyclog{")
+    print(" node[shape=rect]")
+    log_graph(repo, #object_find(repo, args.commit), set()
+              None)
+    print("}")
+    
+def log_graph(repo, sha, seen):
+    if sha in seen:
+        return
+    
+    seen.add(sha)
+    commit = object_read(repo, sha)
+    message = commit.kvlm[None].decode("utf8", "ignore").strip()
+    message = message.replace("\\", "\\\\").replace('"', '\\"')
+    
+    if "\n" in message:
+        message = message[:message.index("\n")]
+    
+    print(f'  c_{sha} [label="{sha[0:7]} : {message}"]')
+    assert commit.fmt == b'commit'
+    
+    if b'parent' not in commit.kvlm:
+        return
+    
+    parents = commit.kvlm[b'parent']
+    
+    if type(parents) != list:
+        parents = [parents]
+    
+    for p in parents:
+        p = p.decode("ascii")
+        print(f" c_{sha} -> c_{p};")
+        log_graph(repo, p, seen)
