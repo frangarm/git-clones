@@ -32,6 +32,7 @@ def main (argv=sys.argv[1:]):
         case "hash-object": cmd_hash_object(args)
         case "log": cmd_log(args)
         case "shortlog": cmd_shortlog(args)
+        case "ls-tree": cmd_ls_tree(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -391,3 +392,88 @@ def cmd_shortlog(args):
         
         for msg in messages:
             print(f"   {msg}")
+
+class GitPyCTreeLeaf:
+    def __init__(self, mode, path, sha):
+        self.mode = mode
+        self.path = path
+        self.sha = sha
+
+def tree_parse_one(raw, start=0):
+    x = raw.find(b' ', start)
+    assert x - start in (5, 6)
+    mode = raw [start:x]
+    
+    if len(mode) == 5:
+        mode = b"0" + mode
+    
+    y = raw.find(b'\x00', x)
+    path = raw[x+1:y]
+    raw_sha = int.from_bytes(raw[y+1:y+21], "big")
+    sha = format(raw_sha, "040x")
+    
+    return y+21, GitPyCTreeLeaf(mode, path.decode("utf8"), sha)
+
+def tree_parse(raw):
+    pos, max_pos, ret = 0, len(raw), []
+    
+    while pos < max_pos:
+        pos, data = tree_parse_one(raw, pos)
+        ret.append(data)
+    
+    return ret
+
+def tree_leaf_sort_key(leaf):
+    return leaf.path + "/" if leaf.mode.startswith(b"4") else leaf.path
+
+def tree_serialize(obj):
+    obj.items.sort(key=tree_leaf_sort_key)
+    ret = b''
+    
+    for i in obj.items:
+        ret += i.mode + b' ' + i.path.encode("utf8") + b'\x00'
+        ret += int(i.sha, 16).to_bytes(20, byteorder="big")
+    
+    return ret
+
+class GitPyCTree(GitPyCObject):
+    fmt = b'tree'
+    
+    def deserialize(self, data):
+        self.items = tree_parse(data)
+    
+    def serialize(self):
+        return tree_serialize(self)
+
+    def init(self):
+        self.items = []
+
+argsp = argsubparser.add_parser("ls-tree", help = "Pretty-print a tree object.")
+argsp.add_argument("-r", dest="recursive", action="store_true")
+argsp.add_argument("tree")
+
+def cmd_ls_tree(args):
+    repo = repo_find()
+    ls_tree(repo, args.tree, args.recursive)
+
+def ls_tree(repo, ref, recursive=None, prefix=""):
+    sha = object_find(repo, ref, fmt=b"tree")
+    obj = object_read(repo, sha)
+    
+    for item in obj.items:
+        type_bytes = item.mode[0:1] if len(item.mode) == 5 else item.mode[0:2]
+        
+        match type_bytes:
+            case b'04': t = "tree"
+            case b'10': t = "blob"
+            case b'12': t = "blob"
+            case b'16': t = "commit"
+            case _: raise Exception(f"Strange tree lead mode {item.mode}.")
+            
+        full = os.path.join(prefix, item.path)
+        
+        if not (recursive and t == 'tree'):
+            pad = '0' * (6-len(item.mode))
+            print(f"{pad}{item.mode.decode()} {t} {item.sha}\t{full}")
+        else:
+            ls_tree(repo, item.sha, recursive, full)
