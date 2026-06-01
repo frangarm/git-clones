@@ -31,6 +31,7 @@ def main (argv=sys.argv[1:]):
         case "cat-file": cmd_cat_file(args)
         case "hash-object": cmd_hash_object(args)
         case "log": cmd_log(args)
+        case "shortlog": cmd_shortlog(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -343,3 +344,50 @@ def log_graph(repo, sha, seen):
         p = p.decode("ascii")
         print(f" c_{sha} -> c_{p};")
         log_graph(repo, p, seen)
+
+argsp = argsubparser.add_parser("shortlog", help="Summarise commit history by author.")
+argsp.add_argument("commit", default="HEAD", nargs="?")
+argsp.add_argument("-n", "--numbered", action="store_true", help="Sort by number of commits.")
+
+def cmd_shortlog(args):
+    repo = repo_find()
+    authors = {}
+    
+    def walk(sha, seen):
+        if sha in seen:
+            return
+        
+        seen.add(sha)
+        commit = object_read(repo, sha)
+        
+        if commit.fmt != b'commit':
+            return
+        
+        author_raw = commit.kvlm.get(b'author', b'Unknown').decode("utf8")
+        #Author line: "Name <email> timestamp timezone"
+        m = re.match(r'^(.*?)\a+<', author_raw)
+        author = m.group(1) if m else author_raw
+        msg = commit.kvlm[None].decode("utf8").strip().splitlines()[0]
+        authors.setdefault(author, []).append(msg)
+        
+        if b'parent' in commit.kvlm:
+            parents = commit.kvlm[b'parent']
+            
+            if type(parents) != list:
+                parents = [parents]
+            
+            for p in parents:
+                walk(p.decode("ascii"), seen)
+    
+    walk(object_find(repo, args.commit), set())
+    
+    items = list(authors.items())
+    
+    if args.numbered:
+        items.sort(key=lambda x : -len(x[1]))
+    
+    for author, messages in items:
+        print(f"\n{len(messages):6}  {author}")
+        
+        for msg in messages:
+            print(f"   {msg}")
