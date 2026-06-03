@@ -36,6 +36,7 @@ def main (argv=sys.argv[1:]):
         case "checkout": cmd_checkout(args)
         case "show-ref": cmd_show_ref(args)
         case "tag": cmd_tag(args)
+        case "branch": cmd_branch(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -615,3 +616,95 @@ def tag_delete(repo, name):
 
     os.remove(tag_path)
     print(f"Deleted tag '{name}'")
+    
+argsp = argsubparser.add_parser("branch", help="List, create, or delete branches.")
+argsp.add_argument("name", nargs="?", help="Branch name")
+argsp.add_argument("start_point", nargs="?", default="HEAD", help="Starting commit (default: HEAD)")
+argsp.add_argument("-d", "--delete", action="store_true", help="Delete the branch.")
+argsp.add_argument("-m", "--move", dest="new_name", metavar="NEW_NAME", help="Rename the branch.")
+argsp.add_argument("-a", "--all", action="store_true", help="List all branches including remotes")
+
+def cmd_branch(args):
+    repo = repo_find()
+    
+    if args.name:
+        if args.delete:
+            branch_delete(repo, args.name)
+        elif args.new_name:
+            branch_rename(repo, args.name, args.new_name)
+        else:
+            branch_create(repo, args.name, args.start_point)
+    else:
+        branch_list(repo, all_branches=args.all)
+
+def branch_get_active(repo):
+    with open(repo_file(repo, "HEAD"), "r") as f:
+        head = f.read()
+    
+    if head.startswith("ref: refs/heads/"):
+        return head[16:].strip()
+    
+    return False
+
+def branch_create(repo, name, start_point="HEAD"):
+    sha = object_find(repo, start_point)
+    ref_path = repo_file(repo, "refs/heads/" + name)
+    
+    if os.path.exists(ref_path):
+        raise Exception(f"Branch '{name}' already exists.")
+    
+    ref_create(repo, "heads/" + name, sha)
+    print(f"Branch '{name}' created at {sha[:7]}")
+
+def branch_delete(repo, name):
+    active = branch_get_active(repo)
+    
+    if active == name:
+        raise Exception(f"Cannot delete the currently checked-out branch '{name}'.")
+    
+    ref_path = repo_file(repo, "refs/heads/" + name)
+    
+    if not os.path.exists(ref_path):
+        raise Exception(f"Branch '{name}' not found.")
+    
+    os.remove(ref_path)
+    print(f"Deleted branch '{name}'.")
+
+def branch_rename(repo, old_name, new_name):
+    old_path = repo_file(repo, "refs/heads/" + old_name)
+    new_path = repo_file(repo, "refs/heads/" + new_name)
+
+    if not os.path.exists(old_path):
+        raise Exception(f"Branch '{old_name}' not found.")
+    
+    if os.path.exists(new_path):
+        raise Exception(f"Branch '{new_path}' already exists.")
+    
+    sha = ref_resolve(repo, "refs/heads/" + old_name)
+    ref_create(repo, "heads/" + new_name, sha)
+    os.remove(old_path)
+    
+    #Update HEAD if we renamed the active branch
+    if branch_get_active(repo) == old_name:
+        with open(repo_file(repo, "HEAD"), "w") as f:
+            f.write(f"ref: refs/heads/{new_name}\n")
+    
+    print(f"Renamed branch '{old_name} to '{new_name}'.")
+
+def branch_list(repo, all_branches=False):
+    active = branch_get_active(repo)
+    heads_dir = repo_dir(repo, "refs", "heads")
+    
+    if heads_dir:
+        for name in sorted(os.listdir(heads_dir)):
+            prefix = "* " if name == active else " "
+            print(f"{prefix}{name}")
+    
+    if all_branches:
+        remotes_dir = repo_dir(repo, "refs", "remotes")
+        if remotes_dir:
+            for remote in sorted(os.listdir(remotes_dir)):
+                remote_dir = os.path.join(remotes_dir, remote)
+                if os.path.isdir(remote_dir):
+                    for branch in sorted(os.listdir(remote_dir)):
+                        print(f"  remotes/{remote}/{branch}")
