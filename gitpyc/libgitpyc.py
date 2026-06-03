@@ -35,6 +35,7 @@ def main (argv=sys.argv[1:]):
         case "ls-tree": cmd_ls_tree(args)
         case "checkout": cmd_checkout(args)
         case "show-ref": cmd_show_ref(args)
+        case "tag": cmd_tag(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -566,3 +567,51 @@ def show_ref(repo, refs, with_hash=True, prefix=""):
                 print(f"{prefix}{k}")
         else:
             show_ref(repo, v, with_hash=with_hash, prefix=f"{prefix}{k}")
+
+class GitPyCTag(GitPyCCommit):
+    fmt = b'tag'
+
+argsp = argsubparser.add_parser("tag", help="List and create tags")
+argsp.add_argument("-a", action="store_true", dest="create_tag_object")
+argsp.add_argument("-d", "--delete", dest="delete", action="store_true", help="Delete a tag")
+argsp.add_argument("name", nargs="?")
+argsp.add_argument("object", default="HEAD", nargs="?")
+
+def cmd_tag(args):
+    repo = repo_find()
+    
+    if args.name:
+        if args.delete:
+            tag_delete(repo, args.name)
+        else:
+            tag_create(repo, args.name, args.object, create_tag_object=args.create_tag_object)
+    else:
+        refs = ref_list(repo)
+        if "tags" in refs:
+            show_ref(repo, refs["tags"], with_hash=False)
+
+def tag_create(repo, name, ref, create_tag_object=False):
+    sha = object_find(repo, ref)
+    
+    if create_tag_object:
+        tag = GitPyCTag()
+        tag.kvlm = dict()
+        tag.kvlm[b'object'] = sha.encode()
+        tag.kvlm[b'type'] = b'commit'
+        tag.kvlm[b'tag'] = name.encode()
+        tag.kvlm[b'tagger'] = b'GitPyC <gitpyc@example.com>'
+        tag.kvlm[None] = b"Tag created by GitPyC.\n"
+        tag_sha = object_write(tag, repo)
+        ref_create(repo, "tags/" + name, tag_sha)
+    else:
+        tag_sha = object_write(tag, repo)
+        ref_create(repo, "tags/" + name, sha)
+
+def tag_delete(repo, name):
+    tag_path = repo_file(repo, "refs/tags/" + name)
+    
+    if not os.path.exists(tag_path):
+        raise Exception(f"Tag '{name} not found.")
+
+    os.remove(tag_path)
+    print(f"Deleted tag '{name}'")
