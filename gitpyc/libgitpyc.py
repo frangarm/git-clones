@@ -37,6 +37,7 @@ def main (argv=sys.argv[1:]):
         case "show-ref": cmd_show_ref(args)
         case "tag": cmd_tag(args)
         case "branch": cmd_branch(args)
+        case "rev-parse": cmd_rev_parse(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -186,8 +187,8 @@ def object_read(repo, sha):
 
     match fmt:
         case b'commit': c = GitPyCCommit
-        case b'tree': c = None
-        case b'tag': c = None
+        case b'tree': c = GitPyCTree
+        case b'tag': c = GitPyCTag
         case b'blob': c = GitPyCBlob
         case _: raise Exception(f"Unknown type {fmt.decode('ascii')} for object {sha}")
     
@@ -605,14 +606,13 @@ def tag_create(repo, name, ref, create_tag_object=False):
         tag_sha = object_write(tag, repo)
         ref_create(repo, "tags/" + name, tag_sha)
     else:
-        tag_sha = object_write(tag, repo)
         ref_create(repo, "tags/" + name, sha)
 
 def tag_delete(repo, name):
     tag_path = repo_file(repo, "refs/tags/" + name)
     
     if not os.path.exists(tag_path):
-        raise Exception(f"Tag '{name} not found.")
+        raise Exception(f"Tag '{name}' not found.")
 
     os.remove(tag_path)
     print(f"Deleted tag '{name}'")
@@ -771,3 +771,12 @@ def object_find(repo, name, fmt=None, follow=True):
             sha = obj.kvlm[b'tree'].decode("ascii")
         else:
             return None
+
+argsp = argparser.add_parser("rev-parse", help="Parse revision identifiers")
+argsp.add_argument("--gitpyc-type", metavar="type", dest="type", choices=["blob", "commit", "tag", "tree"], default=None)
+argsp.add_argument("name")
+
+def cmd_rev_parse(args):
+    fmt = args.type.encode() if args.type else None
+    repo = repo_find()
+    print(object_find(repo, args.name, fmt, follow=True))
