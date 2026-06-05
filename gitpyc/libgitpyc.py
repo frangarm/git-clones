@@ -38,6 +38,7 @@ def main (argv=sys.argv[1:]):
         case "tag": cmd_tag(args)
         case "branch": cmd_branch(args)
         case "rev-parse": cmd_rev_parse(args)
+        case "ls-files": cmd_ls_files(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -900,3 +901,30 @@ def index_write(repo, index):
                 pad = 8 - (idx % 8)
                 f.write((0).to_bytes(pad, "big"))
                 idx += pad
+                
+argsp = argsubparser.add_parser("ls-files", help="List all staged files")
+argsp.add_argument("--verbose", action="store_true")
+
+def cmd_ls_files(args):
+    repo = repo_find()
+    index = index_read(repo)
+    
+    if args.verbose:
+        print(f"Index file format v{index.version}, {len(index.entries)} entries.")
+    
+    for e in index.entries:
+        print(e.name)
+        
+        if args.verbose:
+            entry_type = {0b1000:"regular file", 0b1010: "symlink", 0b1110: "gitpyc link"}[e.mode_type]
+            print(f"  {entry_type} with perms: {e.mode_perms:o}")
+            print(f"  on blob: {e.sha}")
+            print(f"  created: {datetime.fromtimestamp(e.ctime[0])}.{e.ctime[1]}, "
+                  f"modified: {datetime.fromtimestamp(e.mtime[0])}.{e.mtime[1]}")
+            print(f"  device: {e.dev}, inode: {e.ino}")
+            try:
+                print(f"  user: {pwd.getpwuid(e.uid).pw_name} ({e.uid})  "
+                      f"group: {grp.getgrgid(e.gid).gr_name} ({e.gid})")
+            except (NameError, KeyError):
+                print(f"  user: {e.uid}  group: {e.gid}")
+            print(f"  flags: stage={e.flag_stage} assume_valid={e.flag_assume_valid}")
