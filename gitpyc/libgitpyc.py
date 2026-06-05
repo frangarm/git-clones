@@ -40,6 +40,7 @@ def main (argv=sys.argv[1:]):
         case "rev-parse": cmd_rev_parse(args)
         case "ls-files": cmd_ls_files(args)
         case "check-ignore": cmd_check_ignore(args)
+        case "status": cmd_status(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -1027,4 +1028,93 @@ def cmd_check_ignore(args):
     
     for path in args.path:
         if check_ignore(rules, path):
-            print(path)
+            print(path)  
+argsp = argsubparser.add_parser("status", help="Show the working tree.")
+
+def cmd_status(_):
+    repo = repo_find()
+    index = index_read(repo)
+    cmd_status_branch(repo)
+    cmd_status_head_index(repo, index)
+    print()
+    cmd_status_index_worktree(repo, index)
+
+def cmd_status_branch(repo):
+    branch = branch_get_active(repo)
+    
+    if branch:
+        print(f"On branch {branch}.")
+    else:
+        print(f"HEAD detached at {object_find(repo, 'HEAD')}")
+
+def tree_to_dict(repo, ref, prefix=""):
+    ret = {}
+    tree_sha = object_find(repo, ref, fmt=b"tree")
+    tree = object_read(repo, tree_sha)
+    
+    for leaf in tree.items:
+        full_path = os.path.join(prefix, leaf.path)
+        
+        if leaf.mode.startswith(b'40000') or leaf.mode.startswith(b'040000'):
+            ret.update(tree_to_dict(repo, leaf.sha, full_path))
+        else:
+            ret[full_path] = leaf.sha
+    
+    return ret
+
+def cmd_status_head_index(repo, index):
+    print("Changes to be committed:")
+    try:
+        head = tree_to_dict(repo, "HEAD")
+    except Exception:
+        head = {}
+    
+    for entry in index.entries:
+        if entry.name in head:
+            if head[entry.name] != entry.sha:
+                print(" modified:", entry.name)
+            del head[entry.name]
+        else:
+            print(" added:  ", entry.name)
+    
+    for entry in head.keys():
+        print(" deleted: ", entry)
+
+def cmd_status_index_worktree(repo, index):
+    print("Changes not staged for commit:")
+    ignore = gitpycignore_read(repo)
+    gitdir_prefix = repo.gitdir + os.path.sep
+    all_files = []
+    
+    for root, _, files in os.walk(repo.worktree, True):
+        if root == repo.gitdir or root.startswith(gitdir_prefix):
+            continue
+        
+        for f in files:
+            full = os.path.join(root, f)
+            rel = os.path.relpath(full, repo.worktree)
+            all_files.append(rel)
+    
+    for entry in index.entries:
+        full_path = os.path.join(repo.worktree, entry.name)
+        
+        if not os.path.exists(full_path):
+            print(" deleted: ", entry.name)
+        else:
+            stat = os.stat(full_path)
+            ctime_ns = entry.ctime[0] * 10**9 + entry.ctime[1]
+            mtime_ns = entry.mtime[0] * 10**9 + entry.mtime[1]
+            
+            if stat.st_ctime_ns != ctime_ns or stat.st_mtime_ns != mtime_ns:
+                with open(full_path, "rb") as fd:
+                    new_sha = object_hash(fd, b"blob", None)
+                if entry.sha != new_sha:
+                    print(" modified:", entry.name)
+        if entry.name in all_files:
+            all_files.remove(entry.name)
+    print()
+    print("Untracked files:")
+    
+    for f in all_files:
+        if not check_ignore(ignore, f):
+            print(" ", f)
