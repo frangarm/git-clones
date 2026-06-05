@@ -39,6 +39,7 @@ def main (argv=sys.argv[1:]):
         case "branch": cmd_branch(args)
         case "rev-parse": cmd_rev_parse(args)
         case "ls-files": cmd_ls_files(args)
+        case "check-ignore": cmd_check_ignore(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -928,3 +929,102 @@ def cmd_ls_files(args):
             except (NameError, KeyError):
                 print(f"  user: {e.uid}  group: {e.gid}")
             print(f"  flags: stage={e.flag_stage} assume_valid={e.flag_assume_valid}")
+
+class GitPyCIgnore:
+    def __init__(self, absolute, scoped):
+        self.absolute = absolute
+        self.scoped = scoped
+
+def gitpycignore_parsel(raw):
+    raw = raw.strip()
+    
+    if not raw or raw[0] == "#":
+        return None
+    elif raw[0] == "!":
+        return (raw[1:], False)
+    elif raw[0] == "\\":
+        return (raw[1:], True)
+    else:
+        return (raw, True)
+
+def gitpycignore_parse(lines):
+    return [p for p in (gitpycignore_parsel(l) for l in lines) if p]
+
+def gitpycignore_read(repo):
+    ret = GitPyCIgnore(absolute=[], scoped={})
+    exclude = os.path.join(repo.gitdir, "info/exclude")
+    
+    if os.path.exists(exclude):
+        with open(exclude, "r") as f:
+            ret.absolute.append(gitpycignore_parse(f.readlines()))
+    
+    config_home = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
+    global_file = os.path.join(config_home, "gitpyc/ignore")
+    
+    if os.path.exists(global_file):
+        with open(global_file, "r") as f:
+            ret.absolute.append(gitpycignore_parse(f.readlines()))
+    
+    index = index_read(repo)
+    
+    for entry in index.entries:
+        if entry.name == ".gitpycignore" or entry.name.endswith("/.gitpycignore"):
+            dir_name = os.path.dirname(entry.name)
+            contents = object_read(repo, entry.sha)
+            lines = contents.blobdata.decode("utf8").splitlines()
+            ret.scoped[dir_name] = gitpycignore_parse(lines)
+    
+    return ret
+
+def check_ignore1(rules, path):
+    result = None
+    for pattern, value in rules:
+        if fnmatch.fnmatch(path, pattern):
+            result = value
+    
+    return result
+
+def check_ignored_scoped(rules, path):
+    parent = os.path.dirname(path)
+    
+    while True:
+        if parent in rules:
+            rel_path = os.path.relpath(path, parent) if parent else path
+            result = check_ignore1(rules[parent], rel_path)
+            if result is not None:
+                return result
+        if parent == "":
+            break
+        parent = os.path.dirname(parent)
+    return None
+
+def check_ignore_absolute(rules, path):
+    for ruleset in rules:
+        result = check_ignore1(ruleset, path)
+        
+        if result is not None:
+            return result
+    
+    return False
+
+def check_ignore(rules, path):
+    if os.path.isabs(path):
+        raise Exception("Path must be relative to repository root")
+    
+    result = check_ignored_scoped(rules.scoped, path)
+    
+    if result is not None:
+        return result
+    
+    return check_ignore_absolute(rules.absolute, path)
+
+argsp = argsubparser.add_parser("check-ignore", help="Check path(s) against ignore rules.")
+argsp.add_argument("path", nargs="+")
+
+def cmd_check_ignore(args):
+    repo = repo_find()
+    rules = gitpycignore_read(repo)
+    
+    for path in args.path:
+        if check_ignore(rules, path):
+            print(path)
