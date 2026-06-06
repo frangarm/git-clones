@@ -1208,4 +1208,37 @@ def add(repo, paths, delete=True, skip_missing=False):
 
     index.entries.sort(key=lambda x: x.name)
     index_write(repo, index)
+
+def tree_from_index(repo, index):
+    contents = {"":[]}
+    
+    for entry in index.entries:
+        dirname = os.path.dirname(entry.name)
+        key = dirname
         
+        while key != "":
+            contents.setdefault(key, [])
+            key = os.path.dirname(key)
+        
+        contents[dirname].append(entry)
+    
+    sha = None
+    
+    for path in sorted(contents.keys(), key=len, reverse=True):
+        tree = GitPyCTree()
+        
+        for entry in contents[path]:
+            if isinstance(entry, GitPyCIndexEntry):
+                leaf_mode = f"{entry.mode_type:02o}{entry.mode_perms:04o}".encode("ascii")
+                leaf = GitPyCTreeLeaf(mode=leaf_mode, path=os.path.basename(entry.name), sha=entry.sha)
+            else:
+                leaf = GitPyCTreeLeaf(mode=b"040000", path=entry[0], sha=entry[1])
+            
+            tree.items.append(leaf)
+        
+        sha = object_write(tree, repo)
+        parent = os.path.dirname(path)
+        base = os.path.basename(path)
+        contents[parent].append((base, sha))
+    
+    return sha
