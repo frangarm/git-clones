@@ -49,6 +49,7 @@ def main (argv=sys.argv[1:]):
         case "status": cmd_status(args)
         case "rm": cmd_rm(args)
         case "add": cmd_add(args)
+        case "commit": cmd_commit(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -1262,3 +1263,52 @@ def gitpycconfig_user_get(config):
             return f"{config['user']['name']} <{config['user']['email']}>"
     
     return None
+
+argsp = argsubparser.add_parser("commit", help="Record changes to the repository.")
+argsp.add_argument("-m", metavar="message", dest="message", required=True)
+
+def commit_create(repo, tree, parent, author, timestamp, message):
+    commit = GitPyCCommit()
+    commit.kvlm[b"tree"] = tree.encode("ascii")
+    
+    if parent:
+        commit.kvlm[b"parent"] = parent.encode("ascii")
+    
+    message = message.strip() + "\n"
+    offset = int(timestamp.astimezon().utcoffset().total_seconds())
+    hours = offset // 3600
+    minutes = (offset % 3600) // 60
+    tz = "{}{:02}{:02}".format("+" if offset >= 0 else "-", abs(hours), abs(minutes))
+    author_str = author + " " + str(int(timestamp.timestamp())) + " " + tz
+    commit.kvlm[b"author"] = author_str.encode("utf8")
+    commit.kvlm[b"committer"] = author_str.encode("utf8")
+    commit.kvlm[None] = message.encode("utf8")
+    
+    return object_write(commit, repo)
+
+def cmd_commit(args):
+    repo = repo_find() 
+    index = index_read(repo)
+    tree = tree_from_index(repo, index)
+    try:
+        parent = object_find(repo, "HEAD")
+    except Exception:
+        parent = None
+    
+    author = gitpycconfig_user_get(gitpycconfig_read())
+    
+    if not author:
+        raise Exception("No user identity configured. Set user.name and user.email.")
+    
+    commit = commit_create(repo, tree, parent, author, datetime.now(), args.message)
+    active_branch = branch_get_active(repo) 
+    
+    if active_branch:
+        with open(repo_file(repo, "refs/heads", active_branch), "w") as fd:
+            fd.write(commit + "\n")
+    else:
+        with open(repo_file(repo, "HEAD"), "w") as fd:
+            fd.write(commit + "\n")
+    
+    #reflog_append
+    print(f"Successfully rebased and updated refs/heads/{active_branch}.")
