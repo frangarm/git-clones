@@ -1242,3 +1242,23 @@ def tree_from_index(repo, index):
         contents[parent].append((base, sha))
     
     return sha
+
+def gitpycconfig_read():
+    xdg = os.environ.get("XDG_CONFIG_HOME", "~/.config")
+    
+    config_files = [
+        os.path.expanduser(os.path.join(xdg, "gitpyc/config")),
+        os.path.expanduser("~/.gitpycconfig")
+    ]
+    
+    config = configparser.ConfigParser()
+    config.read(config_files)
+    
+    return config
+
+def gitpycconfig_user_get(config):
+    if "user" in config:
+        if "name" in config["user"] and "email" in config["user"]:
+            return f"{config['user']['name']} <{config['user']['email']}>"
+    
+    return None
