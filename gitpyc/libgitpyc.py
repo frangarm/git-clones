@@ -50,6 +50,7 @@ def main (argv=sys.argv[1:]):
         case "rm": cmd_rm(args)
         case "add": cmd_add(args)
         case "commit": cmd_commit(args)
+        case "cherry-pick": cmd_cherry_pick(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -1312,3 +1313,77 @@ def cmd_commit(args):
     
     #reflog_append
     print(f"Successfully rebased and updated refs/heads/{active_branch}.")
+
+argsp = argsubparser.add_parser("cherry-pick", help="Apply the changes introduced by an existing commit.")
+argsp.add_argument("commit", help="Commit to cherry-pick")
+argsp.add_argument("-n", "--no-commit", action="store_true", help="Do not commit automatically")
+
+def cmd_cherry_pick(args):
+    repo = repo_find()
+    target_sha = object_find(repo, args.commit, fmt=b'commit')
+    target = object_read(repo, target_sha)
+    
+    if b'parent' not in target.kvlm:
+        raise Exception("Cannot cherry-pick the root commit.")
+    
+    parent_sha = target.kvlm[b'parent']
+    if type(parent_sha) == list:
+        parent_sha = parent_sha[0]
+        
+    parent_sha = parent_sha.decode("ascii")
+    target_tree = tree_to_dict(repo, target_sha)
+    parent_tree = tree_to_dict(repo, parent_sha)
+    
+    all_paths = set(list(target_tree.keys()) + list(parent_tree.keys()))
+    actually_changed = set()  
+    
+    for path in all_paths:
+        a = parent_tree.get(path)
+        b = target_tree.get(path)
+        
+        if a == b:
+            continue
+            
+        actually_changed.add(path)
+        full_path = os.path.join(repo.worktree, path)
+        os.makedirs(os.path.dirname(full_path) or repo.worktree, exist_ok=True)
+        
+        if b:
+            blob = object_read(repo, b)
+            with open(full_path, "wb") as f:
+                f.write(blob.blobdata)
+        elif os.path.exists(full_path):
+            os.remove(full_path)
+    
+    new_files = [os.path.join(repo.worktree, p) for p in actually_changed if os.path.exists(os.path.join(repo.worktree, p))]
+    if new_files:
+        add(repo, new_files)
+        
+    removed = [os.path.join(repo.worktree, p) for p in actually_changed if not os.path.exists(os.path.join(repo.worktree, p))]
+    if removed:
+        rm(repo, removed, delete=False, skip_missing=True)
+
+    if args.no_commit:
+        print(f"Changes from {target_sha[:7]} staged. Commit manually.")
+        return
+
+    author = gitpycconfig_user_get(gitpycconfig_read())
+    if not author:
+        raise Exception("No user identity configured.")
+
+    msg = target.kvlm[None].decode("utf8").strip()
+    index = index_read(repo)
+    tree  = tree_from_index(repo, index)
+    try:
+        parent = object_find(repo, "HEAD")
+    except Exception:
+        parent = None
+        
+    sha = commit_create(repo, tree, parent, author, datetime.now(), msg)
+    active = branch_get_active(repo)
+    
+    if active:
+        with open(repo_file(repo, "refs", "heads", active), "w") as f:
+            f.write(sha + "\n")
+            
+    print(f"[{active or 'HEAD'} {sha[:7]}] {msg.splitlines()[0]}")
