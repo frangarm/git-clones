@@ -1315,10 +1315,6 @@ def cmd_commit(args):
     #reflog_append
     print(f"Successfully rebased and updated refs/heads/{active_branch}.")
 
-argsp = argsubparser.add_parser("cherry-pick", help="Apply the changes introduced by an existing commit.")
-argsp.add_argument("commit", help="Commit to cherry-pick")
-argsp.add_argument("-n", "--no-commit", action="store_true", help="Do not commit automatically")
-
 argsp = argsubparser.add_parser("diff", help="Show changes between commits, commit and index, or index and worktree.")
 argsp.add_argument("a", nargs="?", default=None, help="First commit/tree (omit to diff index vs worktree)")
 argsp.add_argument("b", nargs="?", default=None, help="Second commit/tree (omit to diff index vs worktree)")
@@ -1328,9 +1324,8 @@ def cmd_diff(args):
     repo = repo_find()
     
     if args.cached:
-        #diff HEAD (or args.a) againts index
+        #diff HEAD (or args.a) against index
         ref = args.a or "HEAD"
-        
         try:
             a_tree = tree_to_dict(repo, ref)
         except Exception:
@@ -1338,13 +1333,15 @@ def cmd_diff(args):
         index = index_read(repo)
         b_tree = {e.name: e.sha for e in index.entries}
         diff_trees(repo, a_tree, b_tree, worktree=None)
+        
     elif args.a and args.b:
         #diff two commits
         a_tree = tree_to_dict(repo, args.a)
         b_tree = tree_to_dict(repo, args.b)
         diff_trees(repo, a_tree, b_tree, worktree=None)
+        
     elif args.a:
-        #diff commit against worktree via index
+        #diff commit against worktree via index tracker
         try:
             a_tree = tree_to_dict(repo, args.a)
         except Exception:
@@ -1352,7 +1349,9 @@ def cmd_diff(args):
         
         index = index_read(repo)
         b_tree = {e.name: e.sha for e in index.entries}
-        diff_trees(repo, a_tree, b_tree, worktree=None)
+        # Fixed: Pass repo.worktree so diff_trees reads the disk files instead of index data
+        diff_trees(repo, a_tree, b_tree, worktree=repo.worktree)
+        
     else:
         #diff index against worktree
         index = index_read(repo)
@@ -1373,7 +1372,7 @@ def cmd_diff(args):
                     new_data = f.read()
                 blob = object_read(repo, entry.sha)
                 old_lines = blob.blobdata.decode("utf8", errors="replace").splitlines(True)
-                new_lines = new_data.decode("utf8",  errors="replace").splitlines(True)
+                new_lines = new_data.decode("utf8", errors="replace").splitlines(True)
                 diff = list(difflib.unified_diff(old_lines, new_lines,
                                                  fromfile=f"a/{entry.name}",
                                                  tofile=f"b/{entry.name}"))
@@ -1385,19 +1384,17 @@ def diff_trees(repo, a_tree, b_tree, worktree=None):
     
     for path in all_paths:
         a_sha = a_tree.get(path)
-        b_sha = b_tree.get(path)\
+        b_sha = b_tree.get(path)
         
         if a_sha == b_sha and worktree is None:
             continue
         
         a_lines = []
-        
         if a_sha:
             blob = object_read(repo, a_sha)
             a_lines = blob.blobdata.decode("utf8", errors="replace").splitlines(True)
         
         b_lines = []
-        
         if worktree and b_sha:
             full = os.path.join(worktree, path)
             if os.path.exists(full):
@@ -1408,14 +1405,20 @@ def diff_trees(repo, a_tree, b_tree, worktree=None):
         elif b_sha:
             blob = object_read(repo, b_sha)
             b_lines = blob.blobdata.decode("utf8", errors="replace").splitlines(True)
+            
         if a_lines == b_lines:
             continue
+            
         diff = list(difflib.unified_diff(a_lines, b_lines,
                                          fromfile=f"a/{path}",
                                          tofile=f"b/{path}"))
         for line in diff:
             print(line, end="")
-            
+
+argsp = argsubparser.add_parser("cherry-pick", help="Apply the changes introduced by an existing commit.")
+argsp.add_argument("commit", help="Commit to cherry-pick")
+argsp.add_argument("-n", "--no-commit", action="store_true", help="Do not commit automatically")
+
 def cmd_cherry_pick(args):
     repo = repo_find()
     target_sha = object_find(repo, args.commit, fmt=b'commit')
