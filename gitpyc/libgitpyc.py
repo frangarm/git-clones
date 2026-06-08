@@ -51,6 +51,7 @@ def main (argv=sys.argv[1:]):
         case "add": cmd_add(args)
         case "commit": cmd_commit(args)
         case "cherry-pick": cmd_cherry_pick(args)
+        case "stash": cmd_stash(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -104,17 +105,15 @@ def repo_dir(repo, *path, mkdir=False):
 def repo_find(path=".", required=True):
     path = os.path.realpath(path)
     
-    if os.path.isdir(os.path.join(path, ".gitpyc")):
-        return GitPyCRepository(path)
-
-    parent = os.path.realpath(os.path.join(path, ".."))
-    
-    if parent == path:
-        if required:
-            raise Exception("No gitpyc directory.")
-        return None
-    
-    return repo_find(parent, required)
+    while True:
+        if os.path.isdir(os.path.join(path, ".gitpyc")):
+            return GitPyCRepository(path)
+        parent = os.path.realpath(os.path.join(path, ".."))
+        if parent == path:
+            if required:
+                raise Exception("No gitpyc directory.")
+            return None
+        path = parent
 
 #Creates repo
 def repo_create(path):
@@ -761,29 +760,31 @@ def object_resolve(repo, name):
 
 def object_find(repo, name, fmt=None, follow=True):
     sha = object_resolve(repo, name)
-    
     if not sha:
         raise Exception(f"No such reference: {name}.")
     if len(sha) > 1:
-          raise Exception(f"Ambiguous reference {name}: candidates are:\n - " +
+        raise Exception(
+            f"Ambiguous reference {name}: candidates are:\n - " +
             "\n - ".join(sha))
-    
     sha = sha[0]
     if not fmt:
         return sha
-    
     while True:
         obj = object_read(repo, sha)
         if obj.fmt == fmt:
             return sha
         if not follow:
-            return None
+            raise Exception(
+                f"Object {sha} is a {obj.fmt.decode()!r}, not {fmt.decode()!r} "
+                f"(follow=False — no tag/commit dereference attempted)")
         if obj.fmt == b'tag':
             sha = obj.kvlm[b'object'].decode("ascii")
         elif obj.fmt == b'commit' and fmt == b'tree':
             sha = obj.kvlm[b'tree'].decode("ascii")
         else:
-            return None
+            raise Exception(
+                f"Cannot follow {obj.fmt.decode()!r} object {sha} "
+                f"to type {fmt.decode()!r}")
 
 argsp = argparser.add_parser("rev-parse", help="Parse revision identifiers")
 argsp.add_argument("--gitpyc-type", metavar="type", dest="type", choices=["blob", "commit", "tag", "tree"], default=None)
@@ -819,65 +820,64 @@ class GitPyCIndex:
         
 def index_read(repo):
     index_file = repo_file(repo, "index")
-    
     if not os.path.exists(index_file):
         return GitPyCIndex()
     with open(index_file, 'rb') as f:
         raw = f.read()
-    
+
     header = raw[:12]
-    assert header[:4] == b"DIRC"
+
+    if header[:4] != b"DIRC":
+        raise Exception(f"Invalid index file: bad magic {header[:4]!r}")
     version = int.from_bytes(header[4:8], "big")
-    assert version == 2, "GitPyC only supports index version 2"
+    if version != 2:
+        raise Exception(f"Unsupported index version {version} (GitPyC supports v2 only)")
     count = int.from_bytes(header[8:12], "big")
-    
+
     entries = []
     content = raw[12:]
     idx = 0
-    
     for i in range(count):
-        ctime_s = int.from_bytes(content[idx: idx + 4], "big")    
-        ctime_ns = int.from_bytes(content[idx + 4: idx + 8], "big")   
-        mtime_s = int.from_bytes(content[idx + 8: idx + 12], "big")   
-        mtime_ns = int.from_bytes(content[idx + 12: idx + 16], "big")   
-        dev = int.from_bytes(content[idx + 16: idx + 20], "big")   
-        ino = int.from_bytes(content[idx + 20: idx + 24], "big")
-        unused = int.from_bytes(content[idx + 24: idx + 26], "big")
-        assert unused == 0
-        mode = int.from_bytes(content[idx + 26: idx + 28], "big")
+        ctime_s  = int.from_bytes(content[idx:    idx+4],  "big")
+        ctime_ns = int.from_bytes(content[idx+4:  idx+8],  "big")
+        mtime_s  = int.from_bytes(content[idx+8:  idx+12], "big")
+        mtime_ns = int.from_bytes(content[idx+12: idx+16], "big")
+        dev      = int.from_bytes(content[idx+16: idx+20], "big")
+        ino      = int.from_bytes(content[idx+20: idx+24], "big")
+        unused   = int.from_bytes(content[idx+24: idx+26], "big")
+        mode     = int.from_bytes(content[idx+26: idx+28], "big")
         mode_type = mode >> 12
-        assert mode_type in [0b1000, 0b1010, 0b1110]
+        if mode_type not in (0b1000, 0b1010, 0b1110):
+            raise Exception(f"Unknown mode type {mode_type:#05b} in entry {i}")
         mode_perms = mode & 0b0000000111111111
-        uid = int.from_bytes(content[idx + 28: idx + 32], "big")
-        gid = int.from_bytes(content[idx + 32: idx + 36], "big")   
-        fsize = int.from_bytes(content[idx + 36: idx + 40], "big")
-        sha = format(int.from_bytes(content[idx + 40: idx + 60], "big"), "040x")   
-        flags = int.from_bytes(content[idx + 60: idx + 62], "big")  
+        uid    = int.from_bytes(content[idx+28: idx+32], "big")
+        gid    = int.from_bytes(content[idx+32: idx+36], "big")
+        fsize  = int.from_bytes(content[idx+36: idx+40], "big")
+        sha    = format(int.from_bytes(content[idx+40: idx+60], "big"), "040x")
+        flags  = int.from_bytes(content[idx+60: idx+62], "big")
         flag_assume_valid = (flags & 0b1000000000000000) != 0
-        flag_extended     = (flags & 0b0100000000000000) != 0 
-        assert not flag_extended
+        flag_extended     = (flags & 0b0100000000000000) != 0
+        if flag_extended:
+            raise Exception(f"Extended flag set in entry {i}; v3 index not supported")
         flag_stage  = flags & 0b0011000000000000
         name_length = flags & 0b0000111111111111
-        idx += 62     
-        
+        idx += 62
         if name_length < 0xFFF:
             assert content[idx + name_length] == 0x00
-            raw_name = content[idx: idx + name_length]
+            raw_name = content[idx:idx+name_length]
             idx += name_length + 1
         else:
             null_idx = content.find(b'\x00', idx + 0xFFF)
-            raw_name = content[idx: null_idx]
+            raw_name = content[idx:null_idx]
             idx = null_idx + 1
-        
         name = raw_name.decode("utf8")
-        idx = 8 * ceil(idx/8)
+        idx = 8 * ceil(idx / 8)
         entries.append(GitPyCIndexEntry(
             ctime=(ctime_s, ctime_ns), mtime=(mtime_s, mtime_ns),
             dev=dev, ino=ino, mode_type=mode_type, mode_perms=mode_perms,
             uid=uid, gid=gid, fsize=fsize, sha=sha,
             flag_assume_valid=flag_assume_valid, flag_stage=flag_stage,
-        name=name))
-    
+            name=name))
     return GitPyCIndex(version=version, entries=entries)
 
 def index_write(repo, index):
@@ -1318,6 +1318,9 @@ argsp = argsubparser.add_parser("cherry-pick", help="Apply the changes introduce
 argsp.add_argument("commit", help="Commit to cherry-pick")
 argsp.add_argument("-n", "--no-commit", action="store_true", help="Do not commit automatically")
 
+argsp = argsubparser.add_parser("diff", help="Show changes between commits, commit and index, or index and worktree.")
+argsp.add_argument("a", nargs="?", default=None, help="")
+
 def cmd_cherry_pick(args):
     repo = repo_find()
     target_sha = object_find(repo, args.commit, fmt=b'commit')
@@ -1387,3 +1390,115 @@ def cmd_cherry_pick(args):
             f.write(sha + "\n")
             
     print(f"[{active or 'HEAD'} {sha[:7]}] {msg.splitlines()[0]}")
+
+argsp = argsubparser.add_parser("stash", help="Stash the changes in a dirty working tree.")
+stash_sub = argsp.add_subparsers(dest="stash_cmd")
+stash_sub = argsp.add_subparsers("push", help="Save changes to stash (default)")
+stash_sub = argsp.add_subparsers("pop", help="Apply and remove the latest stash")
+stash_sub = argsp.add_subparsers("apply", help="Apply the latest stash (keep it)")
+stash_sub = argsp.add_subparsers("list", help="List all stashes")
+stash_sub = argsp.add_subparsers("drop", help="Discard the latest stash")
+stash_sub = argsp.add_subparsers("clear", help="Remove all stashes")
+
+def cmd_stash(args):
+    repo = repo_find()
+    cmd = getattr(args, 'stash_cmd', None) or "push"
+    match cmd:
+        case "push":  stash_push(repo)
+        case "pop":   stash_pop(repo)
+        case "apply": stash_apply(repo)
+        case "list":  stash_list(repo)
+        case "drop":  stash_drop(repo)
+        case "clear": stash_clear(repo)
+    
+#Return list of stash Shas from .gitpyc/refs/stash (most recent first)
+def _stash_list_shas(repo):
+    stash_path = repo_file(repo, "refs/stash")
+    
+    if not stash_path or not os.path.exists(stash_path):
+        return []
+    
+    with open(stash_path, "r") as f:
+        sha = f.read().strip()
+    
+    #Walk the stash linked list (stash commits have their previous stash as parent)
+    stashes = []
+    current = sha
+    
+    while current:
+        stashes.append(current)
+        obj = object_read(repo, current)
+        
+        if obj.fmt == b'commit' and b'parent' in obj.kvlm:
+            p = obj.kvlm[b'parent']
+            
+            if type(p) == list:
+                p = p[0]
+            
+            current = p.decode("ascii")
+        else:
+            break
+    
+    return stashes
+
+def stash_push(repo):
+    author = gitpycconfig_user_get(gitpycconfig_read())
+    
+    if not author:
+        raise Exception("No user identity configured.")
+    
+    #Save the current index as a tree
+    index = index_read(repo)
+    tree = tree_from_index(repo, index)
+    
+    try:
+        head_sha = object_find(repo, "HEAD")
+        msg = object_read(repo, head_sha).kvlm[None].decode("utf8").strip().splitlines()[0]
+    except Exception:
+        head_sha = None
+        msg = "initial"
+    
+    stashes = _stash_list_shas(repo)
+    prev_stash = stashes[0] if stashes else None
+    
+    #Build stash commit
+    stash_commit = GitPyCCommit()
+    stash_commit.kvlm[b"tree"] = tree.encode("ascii")
+    
+    if head_sha:
+        stash_commit.kvlm[b"parent"] = head_sha.ecode("ascii") if not prev_stash else [head_sha.encode("ascii"), prev_stash.encode("ascii")]
+    
+    ts = datetime.now()
+    off = int(ts.astimezone().utcoffset().total_seconds())
+    h, m = off // 3600, (off % 3600) // 60
+    tz = "{}{:02}{:02}".format("+" if off >= 0 else "-", abs(h), abs(m))
+    a = f"{author} {int(ts.timestamp())} {tz}".encode("utf8")
+    stash_commit.kvlm[b"author"]    = a
+    stash_commit.kvlm[b"committer"] = a
+    stash_commit.kvlm[None] = f"WIP on {branch_get_active(repo) or 'HEAD'}: {msg}\n".encode("utf8")
+    sha = object_write(stash_commit, repo)
+
+    #Write refs/stash
+    with open(repo_path(repo, "refs/stash"), "w") as f:
+        f.write(sha + "\n")
+
+    #Reset index and worktree to HEAD
+    if head_sha:
+        cmd_reset_hard(repo, head_sha)
+    print(f"Saved working directory and index state WIP on {branch_get_active(repo) or 'HEAD'}: {msg}")
+
+def cmd_reset_hard(repo, sha):
+    commit = object_read(repo, sha)
+    tree_sha = commit.kvlm[b'tree'].decode("ascii")
+    index = index_read(repo)
+    
+    for e in index.entries:
+        fp = os.path.join(repo.worktree, e.name)
+        if os.path.exists(fp):
+            os.remove(fp)
+    
+    tree = object_read(repo, tree_sha)
+    tree_checkout(repo, tree, repo.worktree)
+    new_index = GitPyCIndex()
+    #_tree_to_index(repo, tree_sha, new_index, "")
+    index_write(repo, new_index)
