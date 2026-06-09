@@ -53,6 +53,7 @@ def main (argv=sys.argv[1:]):
         case "diff": cmd_diff(args)
         case "cherry-pick": cmd_cherry_pick(args)
         case "stash": cmd_stash(args)
+        case "reset": cmd_reset(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -1414,6 +1415,67 @@ def diff_trees(repo, a_tree, b_tree, worktree=None):
                                          tofile=f"b/{path}"))
         for line in diff:
             print(line, end="")
+
+argsp = argsubparser.add_parser("reset", help="Reset current HEAD to the specified state.")
+argsp.add_argument("commit", help="Target commit")
+argsp.add_argument("--soft", dest="mode", action="store_const", const="soft")
+argsp.add_argument("--mixed", dest="mode", action="store_const", const="mixed")
+argsp.add_argument("--hard", dest="mode", action="store_const", const="hard")
+argsp.set_defaults(mode="mixed")
+
+def cmd_reset(args):
+    repo = repo_find()
+    sha = object_find(repo, args.commit, fmt=b'commit')
+    #Move branch ref (or detached HEAD)
+    active = branch_get_active(repo)
+    
+    if active:
+        with open(repo_file(repo, "refs/heads", active), "w") as f:
+            f.write(sha + "\n")
+    else:
+        with open(repo_file(repo, "HEAD"), "w") as f:
+            f.write(sha + "\n")
+    if args.mode in ("mixed", "hard"):
+        #Rebuild index from the targer commit's tree
+        commit = object_read(repo, sha)
+        tree_sha = commit.kvlm[b'tree'].decode("ascii")
+        new_index = GitPyCIndex()
+        _tree_to_index(repo, tree_sha, new_index, "")
+        index_write(repo, new_index)
+    if args.mode == "hard":
+        #Overwrite worktree
+        commit = object_read(repo, sha)
+        tree_sha = commit.kvlm[b'tree'].decode("ascii")
+        tree = object_read(repo, tree_sha)
+        #Clear worktree tracked files first
+        index = index_read(repo)
+        for e in index.entries:
+            fp = os.path.join(repo.worktree, e.name)
+            if os.path.exists(fp):
+                os.remove(fp)
+        tree_checkout(repo, tree, repo.worktree)
+    
+    #reflog_append
+    print(f"HEAD is now at {sha[:7]}")      
+        
+def _tree_to_index(repo, tree_sha, index, prefix):
+    tree = object_read(repo, tree_sha)
+    
+    for leaf in tree.items:
+        path = os.path.join(prefix, leaf.path) if prefix else leaf.path
+        
+        if leaf.mode.startswith(b'04'):
+            _tree_to_index(repo, leaf.sha, index, path)
+        else:
+            mode_int = int(leaf.mode, 8)
+            mode_type = mode_int >> 9
+            mode_perms = mode_int & 0o777
+            entry = GitPyCIndexEntry(
+                ctime=(0, 0), mtime=(0, 0), dev=0, ino=0,
+                mode_type=mode_type, mode_perms=mode_perms,
+                uid=0, gid=0, fsize=0, sha=leaf.sha,
+                flag_assume_valid=False, flag_stage=False, name=path)
+            index.entries.append(entry)
 
 argsp = argsubparser.add_parser("cherry-pick", help="Apply the changes introduced by an existing commit.")
 argsp.add_argument("commit", help="Commit to cherry-pick")
