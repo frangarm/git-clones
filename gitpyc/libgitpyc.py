@@ -1551,6 +1551,19 @@ def cmd_revert(args):
     else:
         print("Changes staged. Commit manually with: gitpyc commit -m 'Revert ...'")
 
+argsp = argsubparser.add_parser("merge", help="Join two or more development histories together.")
+argsp.add_argument("branch", help="Branch (or commit) to merge into HEAD")
+argsp.add_argument("--no--ff", action="store_true", help="Create a merge commit even for fast-forward merges")
+
+def cmd_merge(args):
+    repo = repo_find()
+    head_sha = object_find(repo, "HEAD", fmt=b'commit')
+    other_sha = object_find(repo, args.branch, fmt=b'commit')
+    
+    if head_sha == other_sha:
+        print("Already up to date.")
+        return
+    
 argsp = argsubparser.add_parser("cherry-pick", help="Apply the changes introduced by an existing commit.")
 argsp.add_argument("commit", help="Commit to cherry-pick")
 argsp.add_argument("-n", "--no-commit", action="store_true", help="Do not commit automatically")
