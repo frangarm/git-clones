@@ -54,6 +54,7 @@ def main (argv=sys.argv[1:]):
         case "cherry-pick": cmd_cherry_pick(args)
         case "stash": cmd_stash(args)
         case "reset": cmd_reset(args)
+        case "revert": cmd_revert(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -1476,6 +1477,79 @@ def _tree_to_index(repo, tree_sha, index, prefix):
                 uid=0, gid=0, fsize=0, sha=leaf.sha,
                 flag_assume_valid=False, flag_stage=False, name=path)
             index.entries.append(entry)
+
+argsp = argsubparser.add_parser("revert", help="Revert a commit by creating an inverse commit.")
+argsp.add_argument("commit", help="Commit to revert")
+argsp.add_argument("-n", "--no-commit", action="store_true", help="Stage changes but do not commit")
+
+def cmd_revert(args):
+    repo = repo_find()
+    target_sha = object_find(repo, args.commit, fmt=b'commit')
+    target = object_read(repo, target_sha)
+    
+    if b'parent' not in target.kvlm:
+        raise Exception("Cannot revert the initial commit (no parent).")
+    
+    parent_sha = target.kvlm[b'parent']
+    
+    if type(parent_sha) == list:
+        parent_sha = parent_sha[0]
+    parent_sha = parent_sha.decode("ascii")
+    target_tree = tree_to_dict(repo, target_sha)
+    parent_tree = tree_to_dict(repo, parent_sha)
+    current_tree = {}
+    
+    try:
+        current_tree = tree_to_dict(repo, "HEAD")
+    except Exception:
+        pass
+    
+    index = index_read(repo)
+    worktree = repo.worktree
+    all_paths = sorted(set(list(target_tree.keys()) + list(parent_tree.keys())))
+    
+    for path in all_paths:
+        a_sha = target_tree.get(path)
+        b_sha = parent_tree.get(path)
+        full_path = os.path.join(worktree, path)
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        
+        if b_sha:
+            blob = object_read(repo, b_sha)
+            with open(full_path, "wb") as f:
+                f.write(blob.blobdata)
+        elif os.path.exists(full_path):
+            os.remove(full_path)
+        
+    affected = [p for p in all_paths if os.path.exists(os.path.join(worktree, p))]
+    
+    if affected:
+        add(repo, [os.path.join(worktree, p) for p in affected])
+    
+    removed = [p for p in all_paths if not os.path.exists(os.path.join(worktree, p))]
+    
+    if removed:
+        rm(repo, [os.path.join(worktree, p) for p in removed], delete=False, skip_missing=True)
+    
+    if not args.no_commit:
+        author = gitpycconfig_user_get(gitpycconfig_read())
+        
+        if not author:
+            raise Exception("No user identity configured.")
+        
+        msg = f"Revert \"{target.kvlm[None].decode("utf8").strip().splitlines()[0]}\""
+        index = index_read(repo)
+        tree = tree_from_index(repo, index)
+        parent = object_find(repo, "HEAD")
+        sha = commit_create(repo, tree, parent, author, datetime.now(), msg)
+        active = branch_get_active(repo)
+        
+        if active:
+            with open(repo_file(repo, "refs/heads", active), "w") as f:
+                f.write(sha + "\n")
+        print(f"[{active or 'HEAD'} {sha[:7]}] {msg}")
+    else:
+        print("Changes staged. Commit manually with: gitpyc commit -m 'Revert ...'")
 
 argsp = argsubparser.add_parser("cherry-pick", help="Apply the changes introduced by an existing commit.")
 argsp.add_argument("commit", help="Commit to cherry-pick")
