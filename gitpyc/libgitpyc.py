@@ -1567,7 +1567,7 @@ def cmd_merge(args):
     
     base_sha = merge_base(repo, head_sha, other_sha)
     
-    if base_sha == head_sha and not args.nodiff:
+    if base_sha == head_sha and not args.no_ff:
         active = branch_get_active(repo)
         
         if active:
@@ -1597,7 +1597,55 @@ def cmd_merge(args):
     head_tree = tree_to_dict(repo, head_sha)
     other_tree = tree_to_dict(repo, other_sha)
     conflicts = []
+    all_paths = sorted(set(list(base_tree.keys()) + list(head_tree.keys()) + list(other_tree.keys())))
 
+    for path in all_paths:
+        base_sha_f = base_tree.get(path)
+        head_sha_f = head_tree.get(path)
+        other_sha_f = other_tree.get(path)
+        full_path = os.path.join(repo.worktree, path)
+        os.makedirs(os.path.dirname(full_path) or repo.worktree, exist_ok=True)
+        
+        if head_sha_f == other_sha_f:
+            continue
+        
+        if head_sha_f == base_sha_f:
+            if other_sha_f:
+                blob = object_read(repo, other_sha_f)
+                with open(full_path, "wb") as f:
+                    f.write(blob.blobdata)
+            elif os.path.exists(full_path):
+                os.remove(full_path)
+        elif other_sha_f == base_sha_f:
+            pass
+        else:
+            conflicts.append(path)
+            base_lines = []
+            head_lines = []
+            other_lines = []
+            
+            if base_sha_f:
+                base_lines = object_read(repo, base_sha_f).blobdata.decode("utf8", errors="replace").splitlines(True)
+            if head_sha_f:
+                head_lines = object_read(repo, head_sha_f).blobdata.decode("utf8", errors="replace").splitlines(True)
+            if other_sha_f:
+                other_lines = object_read(repo, other_sha_f).blobdata.decode("utf8", errors="replace").splitlines(True)
+            merged = ([b"<<<<<<< HEAD\n"] + 
+                [line.encode("utf8") if isinstance(line, str) else line for line in head_lines] +
+                [b"=======\n"] + 
+                [line.encode("utf8") if isinstance(line, str) else line for line in other_lines] +
+                [f">>>>>>> {args.branch}\n".encode("utf8")])
+
+            with open(full_path, "wb") as f:
+                f.writelines(merged)
+                
+    if conflicts:
+        print("CONFLICT (content): Merge conflict in:")
+        for c in conflicts:
+            print(f"  {c}")
+        print("Automatic merge failed; fix conflicts and then commit the result.")
+        return
+                
 def commit_ancestors(repo, sha):
     ancestors = set()
     stack = [sha]
