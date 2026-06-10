@@ -56,6 +56,7 @@ def main (argv=sys.argv[1:]):
         case "stash": cmd_stash(args)
         case "reset": cmd_reset(args)
         case "revert": cmd_revert(args)
+        case "merge": cmd_merge(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -1645,6 +1646,47 @@ def cmd_merge(args):
             print(f"  {c}")
         print("Automatic merge failed; fix conflicts and then commit the result.")
         return
+
+    index = index_read(repo)
+    paths_to_add = []
+    paths_to_rm = []
+    
+    for path in all_paths:
+        full_path = os.path.join(repo.worktree, path)
+        if os.path.exists(full_path):
+            paths_to_add.append(full_path)
+        else:
+            paths_to_rm.append(full_path)
+            
+    if paths_to_add:
+        add(repo, paths_to_add)
+    if paths_to_rm:
+        rm(repo, paths_to_rm, delete=False, skip_missing=True)
+    
+    index = index_read(repo)
+    tree = tree_from_index(repo, index)
+    author = gitpycconfig_user_get(gitpycconfig_read())
+    if not author:
+        raise Exception("No User identity configured.")
+    
+    commit = GitPyCCommit()
+    commit.kvlm[b"tree"]      = tree.encode("ascii")
+    commit.kvlm[b"parent"]    = [head_sha.encode("ascii"), other_sha.encode("ascii")]
+    ts  = datetime.now()
+    off = int(ts.astimezone().utcoffset().total_seconds())
+    h, m = off // 3600, (off % 3600) // 60
+    tz  = "{}{:02}{:02}".format("+" if off >= 0 else "-", abs(h), abs(m))
+    a   = f"{author} {int(ts.timestamp())} {tz}".encode("utf8")
+    commit.kvlm[b"author"]    = a
+    commit.kvlm[b"committer"] = a
+    commit.kvlm[None] = f"Merge branch '{args.branch}'\n".encode("utf8")
+    sha = object_write(commit, repo)
+
+    active = branch_get_active(repo)
+    if active:
+        with open(repo_file(repo, "refs/heads", active), "w") as f:
+            f.write(sha + "\n")
+    print(f"Merge made by 'recursive'. [{active or 'HEAD'} {sha[:7]}]")
                 
 def commit_ancestors(repo, sha):
     ancestors = set()
