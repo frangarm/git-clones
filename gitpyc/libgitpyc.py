@@ -18,6 +18,7 @@ warnings.filterwarnings(
     category=DeprecationWarning, 
     message=".*st_ctime.*"
 )
+from collections import deque
 from datetime import datetime, timezone, timedelta
 from math import ceil
 try:
@@ -1563,6 +1564,87 @@ def cmd_merge(args):
     if head_sha == other_sha:
         print("Already up to date.")
         return
+    
+    base_sha = merge_base(repo, head_sha, other_sha)
+    
+    if base_sha == head_sha and not args.nodiff:
+        active = branch_get_active(repo)
+        
+        if active:
+            with open(repo_file(repo, "refs/heads", active), "w") as f:
+                f.write(other_sha + "\n")
+        else:
+            with open(repo_file(repo, "HEAD"), "w") as f:
+                f.write(other_sha + "\n")
+        
+        commit = object_read(repo, other_sha)
+        tree = object_read(repo, commit.kvlm[b'tree'].decode("ascii"))
+        index = index_read(repo)
+        
+        for e in index.entries:
+            fp = os.path.join(repo.worktree, e.name)
+            if os.path.exists(fp):
+                os.remove(fp)
+        
+        tree_checkout(repo, tree, repo.worktree)
+        new_index = GitPyCIndex()
+        _tree_to_index(repo, commit.kvlm[b'tree'].decode("ascii"), new_index, "")
+        index_write(repo, new_index)
+        print(f"Fast-forward to {other_sha[:7]}")
+        return
+
+    base_tree = tree_to_dict(repo, base_sha) if base_sha else {}
+    head_tree = tree_to_dict(repo, head_sha)
+    other_tree = tree_to_dict(repo, other_sha)
+    conflicts = []
+
+def commit_ancestors(repo, sha):
+    ancestors = set()
+    stack = [sha]
+    while stack:
+        s = stack.pop()
+        
+        if s in ancestors:
+            continue
+        
+        ancestors.add(s)
+        obj = object_read(repo, s)
+        
+        if obj.fmt != b"commit":
+            continue
+        
+        if b'parent' in obj.kvlm:
+            parents = obj.kvlm[b'parent']
+            if type(parents) != list:
+                parents = [parents]
+            for p in parents:
+                stack.append(p.decode("ascii"))
+    
+    return ancestors
+
+def merge_base(repo, sha1, sha2):
+    ancestors1 = commit_ancestors(repo, sha1)
+    queue = deque([sha2])
+    seen = set()
+    
+    while queue:
+        s = queue.popleft()
+        if s in seen:
+            continue
+        seen.add(s)
+        if s in ancestors1:
+            return s
+        obj = object_read(repo, s)
+        if obj.fmt != b"commit":
+            continue
+        if b'parent' in obj.kvlm:
+            parents = obj.kvlm[b'parent']
+            if type(parents) != list:
+                parents = [parents]
+            for p in parents:
+                queue.append(p.decode("ascii"))
+    
+    return None
     
 argsp = argsubparser.add_parser("cherry-pick", help="Apply the changes introduced by an existing commit.")
 argsp.add_argument("commit", help="Commit to cherry-pick")
