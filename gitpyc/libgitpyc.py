@@ -57,6 +57,7 @@ def main (argv=sys.argv[1:]):
         case "reset": cmd_reset(args)
         case "revert": cmd_revert(args)
         case "merge": cmd_merge(args)
+        case "rebase": cmd_rebase(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -1735,53 +1736,136 @@ def merge_base(repo, sha1, sha2):
                 queue.append(p.decode("ascii"))
     
     return None
+
+argsp = argsubparser.add_parser("rebase", help="Reapply commits on top of another base commit.")
+argsp.add_argument("upstream", help="The branch/commit to rebase onto.")
+argsp.add_argument("--onto", default=None, help="Rebase onto this commit instead of upstream.")
+
+def cmd_rebase(args):
+    repo = repo_find()
+    onto = args.onto or args.upstream
+    onto_sha = object_find(repo, onto, fmt=b'commit')
+    upstream_sha = object_find(repo, args.upstream, fmt=b'commit')
+    head_sha = object_find(repo, "HEAD", fmt=b'commit')
+    
+    base = merge_base(repo, head_sha, upstream_sha)
+    commits_to_replay = []
+    sha = head_sha
+    
+    while sha and sha != base:
+        commits_to_replay.append(sha)
+        obj = object_find(repo, sha)
+        
+        if b'parent' not in obj.kvlm:
+            break
+        parent = obj.kvlm[b'parent']
+        if type(parent) == list:
+            parent = parent[0]
+        sha = parent.decode("ascii")
+    commits_to_replay.reverse()
+    
+    if not commits_to_replay:
+        print("Already up to date.")
+        return
+
+    author = gitpycconfig_user_get(gitpycconfig_read())
+    if not author:
+        raise Exception("No user identity configured.")
+    
+    current_sha = onto_sha
+    for commit_sha in commits_to_replay:
+        orig = object_read(repo, commit_sha)
+        if b'parent' in orig.kvlm:
+            p = orig.kvlm[b'parent']
+            if type(p) == list:
+                p = p[0]
+            p = p.decode("ascii")
+            orig_parent_tree = tree_to_dict(repo, p)
+        else:
+            orig_parent_tree = {}
+        orig_tree = tree_to_dict(repo, commit_sha)
+        current_tree = tree_to_dict(repo, current_sha)
+        
+        new_blobs = dict(current_tree)
+        for path, sha_val in orig_tree.items():
+            new_blobs[path] = sha_val
+        for path in orig_parent_tree:
+            if path not in orig_tree:
+                new_blobs.pop(path, None)
+        
+        new_tree_obj = GitPyCTree()
+        for path, sha_val in sorted(new_blobs.items()):
+            new_tree_obj.items.append(GitPyCTreeLeaf(
+                mode=b"100644", path=os.path.basename(path), sha=sha_val))
+        
+        new_tree_sha = object_write(new_tree_obj, repo)
+        msg = orig.kvlm[None]
+        new_commit = GitPyCCommit()
+        new_commit.kvlm[b'tree'] = new_tree_sha.encode("ascii")
+        new_commit.kvlm[b'parent'] = current_sha.encode("ascii")
+        ts  = datetime.now()
+        off = int(ts.astimezone().utcoffset().total_seconds())
+        h, m = off // 3600, (off % 3600) // 60
+        tz  = "{}{:02}{:02}".format("+" if off >= 0 else "-", abs(h), abs(m))
+        a   = f"{author} {int(ts.timestamp())} {tz}".encode("utf8")
+        new_commit.kvlm[b"author"]    = orig.kvlm.get(b"author", a)
+        new_commit.kvlm[b"committer"] = a
+        new_commit.kvlm[None] = msg
+        current_sha = object_write(new_commit, repo)
+        print(f"  {current_sha[:7]} {msg.decode('utf8').strip().splitlines()[0]}")
+    
+    active = branch_get_active(repo)
+    if active:
+        with open(repo_file(repo, "refs/heads", active), "w") as f:
+            f.write(current_sha + "\n")
+    else:
+        with open(repo_file(repo, "HEAD"), "w") as f:
+            f.write(current_sha + "\n")
+    
+    #reflog_append
+    print(f"Successfully rebased and updated refs/heads/{active}.")
     
 argsp = argsubparser.add_parser("cherry-pick", help="Apply the changes introduced by an existing commit.")
 argsp.add_argument("commit", help="Commit to cherry-pick")
-argsp.add_argument("-n", "--no-commit", action="store_true", help="Do not commit automatically")
+argsp.add_argument("-n", "--no-commit", action="store_true", help="Do not automatically commit")
 
 def cmd_cherry_pick(args):
     repo = repo_find()
     target_sha = object_find(repo, args.commit, fmt=b'commit')
-    target = object_read(repo, target_sha)
-    
+    target     = object_read(repo, target_sha)
+
     if b'parent' not in target.kvlm:
         raise Exception("Cannot cherry-pick the root commit.")
-    
+
     parent_sha = target.kvlm[b'parent']
     if type(parent_sha) == list:
         parent_sha = parent_sha[0]
-        
     parent_sha = parent_sha.decode("ascii")
     target_tree = tree_to_dict(repo, target_sha)
     parent_tree = tree_to_dict(repo, parent_sha)
-    
-    all_paths = set(list(target_tree.keys()) + list(parent_tree.keys()))
-    actually_changed = set()  
-    
-    for path in all_paths:
+
+    # Determine what changed in the cherry-picked commit
+    changed_paths = set(list(target_tree.keys()) + list(parent_tree.keys()))
+    for path in changed_paths:
         a = parent_tree.get(path)
         b = target_tree.get(path)
-        
         if a == b:
             continue
-            
-        actually_changed.add(path)
         full_path = os.path.join(repo.worktree, path)
         os.makedirs(os.path.dirname(full_path) or repo.worktree, exist_ok=True)
-        
         if b:
             blob = object_read(repo, b)
             with open(full_path, "wb") as f:
                 f.write(blob.blobdata)
         elif os.path.exists(full_path):
             os.remove(full_path)
-    
-    new_files = [os.path.join(repo.worktree, p) for p in actually_changed if os.path.exists(os.path.join(repo.worktree, p))]
+
+    new_files = [os.path.join(repo.worktree, p) for p in changed_paths
+                 if os.path.exists(os.path.join(repo.worktree, p))]
     if new_files:
         add(repo, new_files)
-        
-    removed = [os.path.join(repo.worktree, p) for p in actually_changed if not os.path.exists(os.path.join(repo.worktree, p))]
+    removed = [os.path.join(repo.worktree, p) for p in changed_paths
+               if not os.path.exists(os.path.join(repo.worktree, p))]
     if removed:
         rm(repo, removed, delete=False, skip_missing=True)
 
@@ -1800,14 +1884,11 @@ def cmd_cherry_pick(args):
         parent = object_find(repo, "HEAD")
     except Exception:
         parent = None
-        
     sha = commit_create(repo, tree, parent, author, datetime.now(), msg)
     active = branch_get_active(repo)
-    
     if active:
-        with open(repo_file(repo, "refs", "heads", active), "w") as f:
+        with open(repo_file(repo, "refs/heads", active), "w") as f:
             f.write(sha + "\n")
-            
     print(f"[{active or 'HEAD'} {sha[:7]}] {msg.splitlines()[0]}")
 
 argsp = argsubparser.add_parser("stash", help="Stash the changes in a dirty working tree.")
