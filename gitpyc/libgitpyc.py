@@ -58,6 +58,7 @@ def main (argv=sys.argv[1:]):
         case "revert": cmd_revert(args)
         case "merge": cmd_merge(args)
         case "rebase": cmd_rebase(args)
+        case "stash": cmd_stash(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -2000,5 +2001,55 @@ def cmd_reset_hard(repo, sha):
     tree = object_read(repo, tree_sha)
     tree_checkout(repo, tree, repo.worktree)
     new_index = GitPyCIndex()
-    #_tree_to_index(repo, tree_sha, new_index, "")
+    _tree_to_index(repo, tree_sha, new_index, "")
     index_write(repo, new_index)
+
+def stash_apply(repo, drop=False):
+    stashes = _stash_list_shas(repo)
+    
+    if not stashes:
+        raise Exception("No stash entries found.")
+    
+    stash_sha = stashes[0]
+    stash_commit = object_read(repo, stash_sha)
+    tree_sha = stash_commit.kvlm[b'tree'].decode("ascii")
+    tree = object_read(repo, tree_sha)
+    tree_checkout(repo, tree, repo.worktree)
+    new_index = GitPyCIndex()
+    _tree_to_index(repo, tree_sha, new_index, "")
+    index_write(repo, new_index)
+    if drop:
+        stash_drop(repo)
+        print(f"Dropped stash@{{0}} ({stash_sha[:7]})")
+    else:
+        print(f"Applied stash@{{0}} ({stash_sha[:7]})")
+
+def stash_pop(repo):
+    stash_apply(repo, drop=True)
+
+def stash_list(repo):
+    stashes = _stash_list_shas(repo)
+    if not stashes:
+        print("No stash entries.")
+        return
+    for i, sha in enumerate(stashes):
+        obj = object_read(repo, sha)
+        msg = obj.kvlm[None].decode("utf8").strip().splitlines()[0]
+        print(f"stash@{{{i}}}: {msg}")
+
+def stash_drop(repo):
+    stashes = _stash_list_shas(repo)
+    if not stashes:
+        raise Exception("No stash entries found.")
+    stash_path = repo_path(repo, "refs/stash")
+    if len(stashes) == 1:
+        os.remove(stash_path)
+    else:
+        with open(stash_path, "w") as f:
+            f.write(stashes[1] + "\n")
+
+def stash_clear(repo):
+    stash_path = repo_path(repo, "refs/stash")
+    if os.path.exists(stash_path):
+        os.remove(stash_path)
+    print("Stash cleared.")
