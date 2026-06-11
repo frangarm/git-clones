@@ -2053,3 +2053,36 @@ def stash_clear(repo):
     if os.path.exists(stash_path):
         os.remove(stash_path)
     print("Stash cleared.")
+
+argsp = argsubparser.add_parser("remote", help="Manage set of tracked repositories.")
+remote_sub = argsp.add_subparsers(dest="remove_cmd")
+rp_add = remote_sub.add_parser("add", help="Add a remote")
+rp_add.add_argument("name")
+rp_add.add_argument("url")
+rp_rm = remote_sub.add_parser("remove", help="Remove a remote")
+rp_rm.add_argument("name")
+remote_sub.add_parser("show", help="List remotes")
+rp_rename = remote_sub.add_parser("rename", help="Rename a remote")
+rp_rename.add_argument("old_name")
+rp_rename.add_argument("new_name")
+
+def cmd_remote(args):
+    repo = repo_find()
+    match getattr(args, 'remove_cmd', 'show') or 'show':
+        case "add": remote_add(repo, args.name, args.url)
+        case "remove": remote_remove(repo, args.name)
+        case "rename": remote_rename(repo, args.old_name, args.new_name)
+        case _: remote_show(repo)
+
+def remote_add(repo, name, url):
+    config = configparser.ConfigParser()
+    config.read(repo_file(repo, "config"))
+    section = f'remote "{name}"'
+    if config.has_section(section):
+        raise Exception(f"Remote '{name}' already exists.")
+    config.add_section(section)
+    config.set(section, "url", url)
+    config.set(section, "fetch", f"+refs/heads/*:refs/remotes/{name}/*")
+    with open(repo_file(repo, "config"), "w") as f:
+        config.write(f)
+    print(f"Added remote '{name}' → {url}")
