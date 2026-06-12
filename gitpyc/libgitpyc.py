@@ -2123,3 +2123,55 @@ def remote_show(repo):
             name = section[8: -1]
             url = config.get(section, "url", fallback=("(no URL)"))
             print(f"{name}\t{url}")
+
+argsp = argsubparser.add_parser("clone", help="Clone a repository into a new directory.")
+argsp.add_argument("source", help= "Source repository path or URL")
+argsp.add_argument("destination", nargs="?", default=None, help="Target directory (default: basename of source)")
+
+def cmd_clone(args):
+    src = args.source
+    dst = args.destination or os.path.basename(src.rstrip("/\\"))
+    if not os.path.isdir(src):
+        raise Exception( f"GitPyC clone supports only local paths. '{src}' is not a directory.\n"
+            "For remote URLs, configure a transport layer.")
+    src_repo = GitPyCRepository(src)
+    dst_repo = repo_create(dst)
+    src_objects = os.path.join(src_repo.gitdir, "objects")
+    dst_objects = os.path.join(dst_repo.gitdir, "objects")
+    for root, dirs, files in os.walk(src_objects):
+        dirs[:] = [d for d in dirs if d not in ("info", "pack")]
+        for f in files:
+            src_f = os.path.join(root, f)
+            rel = os.path.relpath(src_f, src_objects)
+            dst_f = os.path.join(dst_objects, exist_ok=True)
+            shutil.copy2(src_f, dst_f)
+    
+    src_refs = ref_list(src_repo)
+    
+    def copy_refs(refs, prefix="refs"):
+        for k, v in refs.items():
+            if type(v) == str:
+                ref_create(dst_repo, f"{prefix}/{k}"[5:], v)
+            else:
+                copy_refs(v, f"{prefix}/{k}")
+    copy_refs(src_refs)
+    
+    remote_add(dst_repo, "origin", os.path.relpath(src))
+    
+    with open(os.path.join(src_repo.gitdir, "HEAD"), "r") as f:
+        head = f.read()
+    with open(os.path.join(dst_repo.gitdir, "HEAD"), "w") as f:
+        f.write(head)
+    
+    if head.startswith("ref: "):
+        branch = head.strip()[5:]
+        branch_name = branch.split("/")[-1]
+        sha = ref_resolve(dst_repo, branch)
+        if sha:
+            commit = object_read(dst_repo, sha)
+            tree = object_read(dst_repo, commit.kvlm[b'tree'].decode("ascii"))
+            tree_checkout(dst_repo, tree, dst_repo.worktree)
+            new_index = GitPyCIndex()
+            _tree_to_index(dst_repo, commit.kvlm[b'tree'].decode("ascii"), new_index, "")
+            index_write(dst_repo, new_index)
+    print(f"Cloned '{src} into {dst}'")
