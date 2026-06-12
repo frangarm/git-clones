@@ -59,6 +59,7 @@ def main (argv=sys.argv[1:]):
         case "merge": cmd_merge(args)
         case "rebase": cmd_rebase(args)
         case "stash": cmd_stash(args)
+        case "remote": cmd_remote(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -2086,3 +2087,39 @@ def remote_add(repo, name, url):
     with open(repo_file(repo, "config"), "w") as f:
         config.write(f)
     print(f"Added remote '{name}' → {url}")
+
+def remote_remove(repo, name):
+    config = configparser.ConfigParser()
+    config.read(repo_file(repo, "config"))
+    section = f'remote "{name}"'
+    if not config.has_section(section):
+        raise Exception(f"No such remote: '{name}'")
+    config.remove_section(section)
+    with open(repo_file(repo, "config"), "w") as f:
+        config.write()
+    print(f"Rmoved remote: '{name}'")
+
+def remote_rename(repo, old_name, new_name):
+    config = configparser.ConfigParser()
+    config.read(repo_file(repo, "config"))
+    old_sec = f'remote "{old_name}"'
+    new_sec = f'remote "{new_name}"'
+    if not config.has_section(old_sec):
+        raise Exception(f"No such remote: '{old_name}'")
+    items = dict(config.items(old_sec))
+    config.remove_section(old_sec)
+    config.add_section(new_sec)
+    for k, v in items.items():
+        config.set(new_sec, k, v.replace(old_name, new_name))
+    with open(repo_file(repo, "config"), "w") as f:
+        config.write(f)
+    print(f"Renamed remote '{old_name}' to '{new_name}'")
+
+def remote_show(repo):
+    config = configparser.ConfigParser()
+    config.read(repo_file(repo, "config"))
+    for section in config.sections():
+        if section.startswith('remote "'):
+            name = section[8: -1]
+            url = config.get(section, "url", fallback=("(no URL)"))
+            print(f"{name}\t{url}")
