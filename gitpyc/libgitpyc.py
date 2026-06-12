@@ -60,6 +60,7 @@ def main (argv=sys.argv[1:]):
         case "rebase": cmd_rebase(args)
         case "stash": cmd_stash(args)
         case "remote": cmd_remote(args)
+        case "clone": cmd_clone(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
