@@ -61,6 +61,7 @@ def main (argv=sys.argv[1:]):
         case "stash": cmd_stash(args)
         case "remote": cmd_remote(args)
         case "clone": cmd_clone(args)
+        case "fetch": cmd_fetch(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -2176,3 +2177,46 @@ def cmd_clone(args):
             _tree_to_index(dst_repo, commit.kvlm[b'tree'].decode("ascii"), new_index, "")
             index_write(dst_repo, new_index)
     print(f"Cloned '{src} into {dst}'")
+
+argsp = argsubparser.add_parser("fetch", help="Download objects and refs from a remote repository.")
+argsp.add_argument("remote", nargs="?", default="origin")
+
+def cmd_fetch(args):
+    repo = repo_find()
+    config = configparser.ConfigParser()
+    config.read(repo_file(repo, "config"))
+    section = f'remote "{args.remote}"'
+    
+    if not config.has_section(section):
+        raise Exception(f"No remote named '{args.remote}'")
+    url = config.get(section, "url")
+    if not os.path.isdir(url):
+        raise Exception("GitPyC fetch supports only local paths.")
+    
+    remote_repo = GitPyCRepository(url)
+    
+    src_objects = os.path.join(remote_repo.gitdir, "objects")
+    dst_objects = os.path.join(repo.gitdir, "objects")
+    copied = 0
+    
+    for root, dirs, files in os.walk(src_objects):
+        dirs[:] = [d for d in dirs if d not in ("info", "pack")]
+        for f in files:
+            src_f = os.path.join(root, f)
+            rel = os.path.relpath(src_f, src_objects)
+            dst_f = os.path.join(dst_objects, rel)
+            if not os.path.exists(dst_f):
+                os.makedirs(os.path.dirname(dst_f), exist_ok=True)
+                shutil.copy2(src_f, dst_f)
+                copied += 1
+    
+    remote_refs = ref_list(remote_repo)
+    if "heads" in remote_refs:
+        for branch, sha in remote_refs["heads"].items():
+            if type(sha) == str:
+                ref_dir = repo_dir(repo, "refs", "remotes", args.remote, mkdir=True)
+                with open(os.path.join(ref_dir, branch), "w") as f:
+                    f.write(sha + "\n")
+                print(f"  {sha[:7]} refs/remotes/{args.remote}/{branch}")
+    
+    print(f"Fetched {copied} new objects from '{args.remote}'.")
