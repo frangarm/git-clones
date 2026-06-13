@@ -62,6 +62,7 @@ def main (argv=sys.argv[1:]):
         case "remote": cmd_remote(args)
         case "clone": cmd_clone(args)
         case "fetch": cmd_fetch(args)
+        case "pull": cmd_pull(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -2220,3 +2221,32 @@ def cmd_fetch(args):
                 print(f"  {sha[:7]} refs/remotes/{args.remote}/{branch}")
     
     print(f"Fetched {copied} new objects from '{args.remote}'.")
+
+argsp = argsubparser.add_parser("pull", help="Fetch from and integrate with another repository or branch.")
+argsp.add_argument("remote", nargs="?", default="origin")
+argsp.add_argument("branch", nargs="?", default=None)
+
+def cmd_pull(args):
+    repo = repo_find()
+    active = branch_get_active(repo)
+    remote_name = args.remote or "origin"
+    branch_name = args.branch or active
+    if not branch_name:
+        raise Exception("Not on a branch and no branch specified.")
+    
+    #First, fetch
+    class FetchArgs:
+        remote = remote_name
+    cmd_fetch(FetchArgs())
+    
+    #Then, merge
+    remote_ref = f"remotes/{remote_name}/{branch_name}"
+    remote_sha = ref_resolve(repo, f"refs/{remote_ref}")
+    if not remote_sha:
+        raise Exception(f"No tracking branch found for {remote_ref}")
+    
+    class MergeArgs:
+        branch = remote_ref
+        no_ff = False
+    
+    cmd_merge(MergeArgs())
