@@ -63,6 +63,7 @@ def main (argv=sys.argv[1:]):
         case "clone": cmd_clone(args)
         case "fetch": cmd_fetch(args)
         case "pull": cmd_pull(args)
+        case "push": cmd_push(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -2250,3 +2251,53 @@ def cmd_pull(args):
         no_ff = False
     
     cmd_merge(MergeArgs())
+    
+argsp = argsubparser.add_parser("push", help="Update remote refs along with associated objects.")
+argsp.add_argument("remote", nargs="?", default="origin")
+argsp.add_argument("refspec", nargs="?", default=None, help="e.g. HEAD:refs/heads/main")
+
+def cmd_push(args):
+    repo = repo_find()
+    config = configparser.ConfigParser()
+    config.read(repo_file(repo, "config"))
+    section = f'remote "{args.remote}"'
+    if not config.has_section(section):
+        raise Exception(f"No remote named '{args.remote}'")
+    url = config.get(section, "url")
+    if not os.path.isdir(url):
+        raise Exception("GitPyC push supports only local paths.")
+    
+    remote_repo = GitPyCRepository(url)
+    active = branch_get_active(repo)
+    
+    if args.refspec:
+        parts = args.refspec.split(":")
+        src_ref = parts[0]
+        dst_ref = parts[1] if len(parts) > 1 else parts[0]
+    else:
+        if not active:
+            raise Exception("Not on a branch. Specify a refspec.")
+        src_ref = f"refs/heads/{active}"
+        dst_ref = f"refs/heads/{active}"
+    
+    sha = ref_resolve(repo, src_ref)
+    if not sha:
+        raise Exception(f"Source ref '{src_ref}' not found.")
+    
+    local_objects = os.path.join(repo.gitdir, "objects")
+    remote_objects = os.path.join(remote_repo.gitdir, "objects")
+    copied = 0
+    for root, dirs, files in os.walk(local_objects):
+        dirs[:] = [d for d in dirs if d not in ("info", "pack")]
+        for f in files:
+            src_f = os.path.join(root, f)
+            rel = os.path.relpath(src_f, local_objects)
+            dst_f = os.path.join(remote_objects, rel)
+            if not os.path.exists(dst_f):
+                os.makedirs(os.path.dirname(dst_f), exist_ok=True)
+                shutil.copy2(src_f, dst_f)
+                copied += 1
+    
+    ref_create(remote_repo, dst_ref[5:] if dst_ref.startswith("refs/") else dst_ref, sha)
+    print(f"To {url}")
+    print(f"  {sha[:7]} {src_ref} -> {dst_ref} ({copied} objects)")
