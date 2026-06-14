@@ -66,6 +66,7 @@ def main (argv=sys.argv[1:]):
         case "push": cmd_push(args)
         case "balme": cmd_blame(args)
         case "grep": cmd_grep(args)
+        case "describe": cmd_describe(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -2442,3 +2443,50 @@ def cmd_grep(args):
                                 print(f"{prefix}{line}", end="")
                 except Exception:
                     pass
+
+argsp = argsubparser.add_parser("describe", help="Give an object a human-readable name based on an available ref.")
+argsp.add_argument("commit", nargs="?", default="HEAD")
+argsp.add_argument("--tags", action="store_true", help="Use any tag, not just annotated tags")
+
+def cmd_describe(args):
+    repo = repo_find()
+    sha = object_find(repo, args.commit, fmt=b'commit')
+    result = describe_commit(repo, sha, lightweight=args.tags)
+    print (result)
+
+def describe_commit(repo, sha, lightweight=False):
+    tags = {}
+    refs = ref_list(repo)
+    tags_refs = refs.get("tags", {})
+    for name, tag_sha in tags_refs.items():
+        if type(tag_sha) != str:
+            continue
+        obj = object_read(repo, tag_sha)
+        if obj.fmt == b'tag':
+            target = obj.kvlm.get(b'object', b'').decode("ascii")
+            tags[target] = name
+        elif lightweight:
+            tags[tag_sha] = name
+    queue = deque([(sha, 0)])
+    visited = set()
+    while queue:
+        current, depth = queue.popleft()
+        if current in visited:
+            continue
+        visited.add(current)
+        if current in tags:
+            if depth == 0:
+                return tags[current]
+            return f"{tags[current]} - {depth} - g{sha[:7]}"
+        obj = object_read(repo, current)
+        if obj.fmt != b'commit':
+            continue
+        if b'parent' in obj.kvlm:
+            parents = obj.kvlm[b'parent']
+            if type(parents) != list:
+                parents = [parents]
+            for p in parents:
+                queue.append((p.decode("ascii"), depth + 1))
+    
+    #If no tag found
+    return sha[:7]
