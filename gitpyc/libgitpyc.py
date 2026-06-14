@@ -64,6 +64,7 @@ def main (argv=sys.argv[1:]):
         case "fetch": cmd_fetch(args)
         case "pull": cmd_pull(args)
         case "push": cmd_push(args)
+        case "balme": cmd_blame(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -2301,3 +2302,90 @@ def cmd_push(args):
     ref_create(remote_repo, dst_ref[5:] if dst_ref.startswith("refs/") else dst_ref, sha)
     print(f"To {url}")
     print(f"  {sha[:7]} {src_ref} -> {dst_ref} ({copied} objects)")
+
+argsp = argsubparser.add_parser("blame", help="Show what revision and author last modified each line of a file")
+argsp.add_argument("file", help="File to blame")
+argsp.add_argument("commit", nargs="?", default="HEAD", help="Commit to start from (default: HEAD)")
+
+def cmd_blame(args):
+    repo = repo_find()
+    sha = object_find(repo, args.commit, fmt=b'commit')
+    blame = blame_file(repo, sha, args.file)
+    for lineno, (commit_sha, author, line) in enumerate(blame, 1):
+        short_sha = commit_sha[:8] if commit_sha else "00000000"
+        short_auth = (author or "Unknown")[:18].ljust(18)
+        print(f"{short_sha} ({short_auth}) {lineno:4}: {line}", end="")
+
+def blame_file(repo, start_sha, filepath):
+    try:
+        tree = tree_to_dict(repo, start_sha)
+    except Exception:
+        return []
+    if filepath not in tree:
+        raise Exception(f"File '{filepath}' not found in commit {start_sha[:7]}")
+    
+    blob = object_read(repo, tree[filepath])
+
+    current_lines = blob.blobdata.decode("utf8", errors="replace").splitlines(True)
+    n = len(current_lines)
+    blame = [(start_sha, None, line) for line in current_lines]
+    
+    visited = set()
+    stack = [start_sha]
+    while stack:
+        sha = stack.pop()
+        if sha in visited:
+            continue
+        visited.add(sha)
+        commit = object_read(repo, sha)
+        if commit.fmt != b'commit':
+            continue
+        author_raw = commit.kvlm.get(b'author', b'').decode("utf8")
+        m = re.match(r'^(.*?)\s+<', author_raw)
+        author = m.group(1) if m else author_raw
+        
+        if b'parent' not in commit.kvlm:
+            for i, (cs, ca, cl) in enumerate(blame):
+                if cs == sha:
+                    blame[i] = (sha, author, cl)
+            continue
+        
+        parents = commit.kvlm[b'parent']
+        if type(parents) != list:
+            parents = [parents]
+        parent_sha = parents[0].decode("ascii")
+        try:
+            parent_tree = tree_to_dict(repo, parent_sha)
+        except Exception:
+            continue
+        
+        if filepath not in parent_tree:
+            for i, (cs, ca, cl) in enumerate(blame):
+                if cs == sha:
+                    blame[i] = (sha, author, cl)
+            continue
+        
+        parent_blob = object_read(repo, parent_tree[filepath])
+        parent_lines = parent_blob.blobdata.decode("utf8", errors="replace").splitlines(True)
+        curr_blob = object_read(repo, tree_to_dict(repo, sha).get(filepath, ""))
+        if not curr_blob:
+            continue
+        
+        curr_lines = curr_blob.blobdata.decode("utf8", errors="replace").splitlines(True)
+        
+        matcher = difflib.SequenceMatcher(None, parent_lines, curr_lines)
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == "equal":
+                for j in range(j1, j2):
+                    if j < len(blame) and blame[j][0] == sha:
+                        blame[j] = (parent_sha, None, blame[j][2])
+        
+        for i, (cs, ca, cl) in enumerate(blame):
+            if cs == sha and ca is None:
+                blame[i] = (sha, author, cl)
+        
+        stack.append(parent_sha)
+        for p in parents[1:]:
+            stack.append(p.decode("ascii"))
+    
+    return blame
