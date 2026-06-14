@@ -65,6 +65,7 @@ def main (argv=sys.argv[1:]):
         case "pull": cmd_pull(args)
         case "push": cmd_push(args)
         case "balme": cmd_blame(args)
+        case "grep": cmd_grep(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -2389,3 +2390,55 @@ def blame_file(repo, start_sha, filepath):
             stack.append(p.decode("ascii"))
     
     return blame
+
+argsp = argsubparser.add_parser("grep", help="Print lines matching a pattern in tracked files.")
+argsp.add_argument("pattern", help="Pattern to search for")
+argsp.add_argument("--cached", action="store_true", help="Search in the index instead of worktree")
+argsp.add_argument("-i", "--ignore-case", action="store_true")
+argsp.add_argument("-n", "--line-number", action="store_true")
+argsp.add_argument("commit", nargs="?", default=None, help="Seach in this commit's tree")
+
+def cmd_grep(args):
+    repo = repo_find()
+    flags = re.IGNORECASE if args.ignore_case else 0
+    pat = re.compile(args.pattern, flags)
+    
+    if args.commit:
+        tree = tree_to_dict(repo, args.commit)
+        for path, sha in sorted(tree.items()):
+            blob = object_read(repo, sha)
+            try:
+                lines = blob.blobdata.decode("utf8", errors="replace").splitlines()
+            except Exception:
+                continue
+            for i,line in enumerate(lines, 1):
+                if pat.search(line):
+                    prefix = f"{path}:{i}" if args.line_number else f"{path}:"
+                    print(f"{prefix}{line}")
+    elif args.cached:
+        index = index_read(repo)
+        for entry in index.entries:
+            blob = object_read(repo, entry.sha)
+            try:
+                lines = blob.blobdata.decode("utf8", errors="replace").splitlines()
+            except Exception:
+                continue
+            for i, line in enumerate(lines, 1):
+                if pat.search(line):
+                    prefix = f"{entry.name}:{i}:" if args.line_number else f"{entry.name}:"
+                    print(f"{prefix}{line}")
+    else:
+        for root, _, files in os.walk(repo.worktree):
+            if root == repo.gitdir or root.startswith(repo.gitdir + os.sep):
+                continue
+            for fname in files:
+                full = os.path.join(root, fname)
+                rel = os.path.relpath(full, repo.worktree)
+                try:
+                    with open(full, "r", errors="replace") as f:
+                        for i, line in enumerate(f, 1):
+                            if pat.search(line):
+                                prefix = f"{rel}:{i}:" if args.line_number else f"{rel}:"
+                                print(f"{prefix}{line}", end="")
+                except Exception:
+                    pass
