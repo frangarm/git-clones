@@ -2638,3 +2638,25 @@ def bisect_log(repo):
         return
     with open(log_path) as f:
         print(f.read())
+
+def reflog_append(repo, ref, sha, message):
+    if ref == "HEAD":
+        log_path = repo_file(repo, "logs", "HEAD")
+    else:
+        log_path = repo_file(repo, "logs", ref)
+    if not log_path:
+        return
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    prev_sha = "0" * 40
+    if os.path.exists(log_path):
+        with open(log_path, "r") as f:
+            lines = f.readline()
+            if lines:
+                prev_sha = lines[-1].split()[1] if len(lines[-1].split()) > 1 else prev_sha
+    ts  = int(datetime.now().timestamp())
+    off = int(datetime.now().astimezone().utcoffset().total_seconds())
+    h, m = off // 3600, (off % 3600) // 60
+    tz  = "{}{:02}{:02}".format("+" if off >= 0 else "-", abs(h), abs(m))
+    author = gitpycconfig_user_get(gitpycconfig_read()) or "GitPyC <gitpyc@example.com>"
+    with open(log_path, "a") as f:
+        f.write(f"{prev_sha} {sha} {author} {ts} {tz}\t{message}\n")   
