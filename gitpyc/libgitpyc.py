@@ -65,7 +65,7 @@ def main (argv=sys.argv[1:]):
         case "fetch": cmd_fetch(args)
         case "pull": cmd_pull(args)
         case "push": cmd_push(args)
-        case "balme": cmd_blame(args)
+        case "blame": cmd_blame(args)
         case "grep": cmd_grep(args)
         case "describe": cmd_describe(args)
         case "bisect": cmd_bisect(args)
@@ -1977,7 +1977,7 @@ def stash_push(repo):
     stash_commit.kvlm[b"tree"] = tree.encode("ascii")
     
     if head_sha:
-        stash_commit.kvlm[b"parent"] = head_sha.ecode("ascii") if not prev_stash else [head_sha.encode("ascii"), prev_stash.encode("ascii")]
+        stash_commit.kvlm[b"parent"] = head_sha.encode("ascii") if not prev_stash else [head_sha.encode("ascii"), prev_stash.encode("ascii")]
     
     ts = datetime.now()
     off = int(ts.astimezone().utcoffset().total_seconds())
