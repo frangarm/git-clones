@@ -13,6 +13,7 @@ import tempfile
 import time
 import zlib
 import warnings
+import json
 warnings.filterwarnings(
     "ignore", 
     category=DeprecationWarning, 
@@ -67,6 +68,7 @@ def main (argv=sys.argv[1:]):
         case "balme": cmd_blame(args)
         case "grep": cmd_grep(args)
         case "describe": cmd_describe(args)
+        case "bisect": cmd_bisect(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -2490,3 +2492,114 @@ def describe_commit(repo, sha, lightweight=False):
     
     #If no tag found
     return sha[:7]
+
+argsp = argsubparser.add_parser("bisect", help="Use binary search to find a bug.")
+bisect_sub = argsp.add_subparsers(dest="bisect_cmd")
+bisect_sub.add_parser("start", help="Start bisect session")
+bisect_sub.add("good", help="Mark current commit as good")
+bisect_sub.add("bad", help="Mark current commit as bad")
+bisect_sub.add("reset", help="End bisect and return to original branch")
+bisect_sub.add("log", help="Show bisect log")
+
+def cmd_bisect(args):
+    repo = repo_find()
+    match getattr(args, 'bisect_cmd', None):
+        case "start": bisect_start(repo)
+        case "good": bisect_mark(repo, "good")
+        case "bad": bisect_mark(repo, "bad")
+        case "reset": bisect_reset(repo)
+        case "log": bisect_log(repo)
+        case _: print("Usage: gitpyc bisect {start|good|bad|reset|log}")
+
+BISECT_STATE_FILE = ".gitpyc/BISECT_STATE"
+BISECT_LOG_FILE = ".gitpyc/BISECT_LOG"
+
+def bisect_start(repo):
+    sha = object_find(repo, "HEAD", fmt=b'commit')
+    state = {"original": sha, "bad": None, "good": [], "current": sha}
+    with open(os.path.join(repo.gitdir, "BISECT_STATE"), "w") as f: 
+        json.dump(state, f)
+        
+    with open(os.path.join(repo.gitdir, "BISECT_LOG"), "w") as f: 
+        f.write(f"# git bisect start\n")
+    
+    print("Bisect session started. Mark commits as good/bad.")
+    
+def bisect_read_state(repo):
+    path = os.path.join(repo.gitdir, "BISECT_STATE")
+    if not os.path.exists(path):
+        raise Exception("No bisect session in progress. Run: gitpyc bisect start")
+    with open(path) as f:
+        return json.load(f)
+
+def bisect_write_state(repo, state):
+    with open(os.path.join(repo.gitdir, "BISECT_STATE"), "w") as f:
+        json.dump(state, f)
+
+def bisect_mark(repo, verdict):
+    state = bisect_read_state(repo)
+    current = object_find(repo, "HEAD", fmt=b'commit')
+    if verdict == "bad":
+        state["bad"] = current
+    else:
+        if current not in state["good"]:
+            state["good"].append(True)
+    with open(os.path.join(repo.gitdir, "BISECT_LOG", "a")) as f:
+        f.write(f"# gitpyc bisect {verdict}\n {current}\n")
+    
+    if state["bad"] and state["good"]:
+        next_sha = bisect_next(repo, state)
+        if next_sha:
+            state["current"] = next_sha
+            bisect_write_state(repo, state)
+            commit = object_read(repo, next_sha)
+            tree = object_read(repo, commit.kvlm[b'tree'].decode("ascii"))
+            index = index_read(repo)
+            
+            for e in index.entries:
+                fp = os.path.join(repo.worktree, e.name)
+                if os.path.exists(fp):
+                    os.remove(fp)\
+            
+            tree_checkout(repo, tree, repo.worktree)
+            new_idx = GitPyCIndex()
+            _tree_to_index(repo, commit.kvlm[b'tree'].decode("ascii"), new_idx, "")
+            index_write(repo, new_idx)
+            with open(repo_file(repo, "HEAD"), "w") as f:
+                f.write(next_sha + "\n")
+            print(f"Bisecting: checking {next_sha[:7]}")
+        else:
+            print(f"The fist bad commit is: {state['bad'][:7]}")
+    else:
+        bisect_write_state(repo, state)
+        print(f"Marked {current[:7]} as {verdict}. Need both a good and bad commit.")
+
+def bisect_next(repo, state):
+    bad_sha = state["bad"]
+    good_shas = set(state["good"])
+    ancestors = []
+    stack = [bad_sha]
+    visited = set()
+    
+    while stack:
+        sha = stack.pop()
+        if sha in visited:
+            continue
+        visited.add(sha)
+        if sha in good_shas:
+            continue
+        ancestors.append(sha)
+        obj = object_read(repo, sha)
+        if obj.fmt != b'commit' or b'parent' not in obj.kvlm:
+            continue
+        parents = obj.kvlm[b'parent']
+        if type(parents) != list:
+            parents = [parents]
+        for p in parents:
+            stack.append(p.decode("ascii"))
+    
+    if len(ancestors) <= 1:
+        return None
+    
+    return ancestors[len(ancestors) // 2]
+        
