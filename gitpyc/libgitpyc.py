@@ -2559,7 +2559,7 @@ def bisect_mark(repo, verdict):
             for e in index.entries:
                 fp = os.path.join(repo.worktree, e.name)
                 if os.path.exists(fp):
-                    os.remove(fp)\
+                    os.remove(fp)
             
             tree_checkout(repo, tree, repo.worktree)
             new_idx = GitPyCIndex()
@@ -2602,4 +2602,39 @@ def bisect_next(repo, state):
         return None
     
     return ancestors[len(ancestors) // 2]
-        
+
+def bisect_reset(repo):
+    path = os.path.join(repo.gitdir, "BISECT_STATE")
+    if not os.path.exists(path):
+        print("Not in a bisect session.")
+        return
+    state = bisect_read_state(repo)
+    original = state.get("original")
+    if original:
+        commit = object_read(repo, original)
+        tree = object_read(repo, commit.kvlm[b'tree'].decode("ascii"))
+        index = index_read(repo)
+        for e in index.entries:
+            fp = os.path.join(repo.worktree, e.name)
+            if os.path.exists(fp):
+                os.remove(fp)
+        tree_checkout(repo, tree, repo.worktree)
+        new_idx = GitPyCIndex()
+        _tree_to_index(repo, commit.kvlm[b'tree'].decode("ascii"), new_idx, "")
+        index_write(repo, new_idx)
+        with open(repo_file(repo, "HEAD"), "w") as f:
+            f.write(original + "\n")
+    
+    os.remove(path)
+    log_path = os.path.join(repo.gitdir, "BISECT_LOG")
+    if os.path.exists(log_path):
+        os.remove(log_path)
+    print("Bisect reset.")
+
+def bisect_log(repo):
+    log_path = os.path.join(repo.gitdir, "BISECT_LOG")
+    if not os.path.exists(log_path):
+        print("No bisect log found.")
+        return
+    with open(log_path) as f:
+        print(f.read())
