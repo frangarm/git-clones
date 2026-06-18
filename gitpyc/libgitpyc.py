@@ -71,6 +71,7 @@ def main (argv=sys.argv[1:]):
         case "bisect": cmd_bisect(args)
         case "reflog": cmd_reflog(args)
         case "clean": cmd_clean(args)
+        case "gc": cmd_gc(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -2743,3 +2744,76 @@ def cmd_clean(args):
                         print(f"Removing {os.path.relpath(full, repo.worktree)}/")
                     dirs.remove(dname)
 
+argsp = argsubparser.add_parser("gc", help="Cleanup unnecessary files and optimize the local repository.")
+argsp.add_argument("--prune", action="store_true", help="Remove unreachable objects")
+
+def cmd_gc(args):
+    repo = repo_find()
+    print("Running garbage collection...")
+    
+    reachable = set()
+    all_refs = _collect_all_ref_shas(repo)
+    
+    def mark(sha):
+        if not sha or sha in reachable:
+            return
+        reachable.add(sha)
+        obj = object_read(repo, sha)
+        if not obj:
+            return
+        if obj.fmt == b'commit':
+            mark(obj.kvlm.get(b'tree', b'').decode("ascii"))
+            parents = obj.kvlm.get(b'parent', [])
+            if type(parents) != list:
+                parents = [parents]
+            for p in parents:
+                mark(p.decode("ascii"))
+        elif obj.fmt == b'tree':
+            for leaf in obj.items:
+                mark(leaf.sha)
+        elif obj.fmt == b'tag':
+            mark(obj.kvlm.get(b'object', b'').decode("ascii"))
+    
+    for sha in all_refs:
+        mark(sha)
+    
+    objects_dir = os.path.join(repo.gitdir, "objects")
+    pruned = 0
+    for prefix in os.listdir(objects_dir):
+        if len(prefix) != 2 or not all(c in "0123456789abcdef" for c in prefix):
+            continue
+        
+        prefix_dir = os.path.join(objects_dir, prefix)
+        if not os.path.isdir(prefix_dir):
+            continue
+        for rest in os.listdir(prefix_dir):
+            sha = prefix + rest
+            if sha not in reachable:
+                if args.prune:
+                    os.remove(os.path.join(prefix_dir, rest))
+                    pruned += 1
+    if args.prune:
+        print(f"Pruned {pruned} unreachable objects.")
+    else:
+        print(f"Found {pruned} unreachable objects. Use --prune to remove them.")
+    
+    print(f"Total rechable objects: {len(reachable)}")
+
+def _collect_all_ref_shas(repo):
+    shas = set()
+    refs_dir = os.path.join(repo.gitdir, "refs")
+    for root, _, files in os.walk(refs_dir):
+        for fname in files:
+            sha = ref_resolve(repo, os.path.relpath(os.path.join(root, fname), repo.gitdir))
+            if sha:
+                shas.add(sha)
+    
+    head = ref_resolve(repo, "HEAD")
+    if head:
+        shas.add(head)
+    stash_path = os.path.join(repo.gitdir, "refs/stash")
+    if os.path.exists(stash_path):
+        with open(stash_path) as f:
+            sha = f.read().strip()
+        shas.add(sha)
+    return shas
