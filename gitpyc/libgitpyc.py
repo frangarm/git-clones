@@ -69,6 +69,7 @@ def main (argv=sys.argv[1:]):
         case "grep": cmd_grep(args)
         case "describe": cmd_describe(args)
         case "bisect": cmd_bisect(args)
+        case "reflog": cmd_reflog(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -2696,3 +2697,47 @@ def _print_reflog(log_path):
         msg = parts[1] if len(parts) > 1 else "?"
         new_sha = header[1] if len(header) > 1 else "?"
         print(f"HEAD@{{{i}}} {new_sha[:7]} {msg}")
+
+argsp = argsubparser.add_parser("clean", help="Remove untracked files from the working tree.")
+argsp.add_argument("-n", "--dry-run", action="store_true", help="Don't actually remove anything, just show what would be done.")
+argsp.add_argument("-f", "--force", action="store_true", help="Actually remove untracked files")
+argsp.add_argument("-d", action="store_true", help="Also remove untracked directories")
+
+def cmd_clean(args):
+    if not args.dry_run and not args.force:
+        print("Use -n (--dry-run) to preview or -f (--force) to actually clean.")
+    repo = repo_find()
+    index = index_read(repo)
+    ignore = gitpycignore_read(repo)
+    staged = {e.name for e in index.entries}
+    gitdir = repo.gitdir + os.sep
+    
+    for root, dirs, files in os.walk(repo.worktree, topdown=True):
+        if root == repo.gitdir or root.startswith(gitdir):
+            dirs[:] = []
+            continue
+        for fname in files:
+            full = os.path.join(root, fname)
+            rel = os.path.relpath(full, repo.worktree)
+            if rel in staged:
+                continue
+            if check_ignore(ignore, rel):
+                continue
+            if args.dry_run:
+                print(f"Would remove {rel}")
+            else:
+                os.remove(full)
+                print(f"Removing {rel}")
+        if args.d:
+            for dname in list(dirs):
+                full = os.path.join(root, dname)
+                if full == repo.gitdir:
+                    dirs.remove(dname)
+                    continue
+                if not any(True for _ in os.scandir(full)):
+                    if args.dry_run:
+                        print(f"Would remove {os.path.relpath(full, repo.worktree)}/")
+                    else:
+                        shutil.rmtree(full)
+                        print(f"Removing {os.path.relpath(full, repo.worktree)}/")
+                    dirs.remove(dname)
