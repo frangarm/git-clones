@@ -1328,7 +1328,7 @@ def cmd_commit(args):
         with open(repo_file(repo, "HEAD"), "w") as fd:
             fd.write(commit + "\n")
     
-    #reflog_append
+    reflog_append(repo, "HEAD", commit, f"commit: {args.message.strip()}")
     print(f"Successfully rebased and updated refs/heads/{active_branch}.")
 
 argsp = argsubparser.add_parser("diff", help="Show changes between commits, commit and index, or index and worktree.")
@@ -1470,7 +1470,7 @@ def cmd_reset(args):
                 os.remove(fp)
         tree_checkout(repo, tree, repo.worktree)
     
-    #reflog_append
+    reflog_append(repo, "HEAD", sha, f"reset: moving to {args.commit}")
     print(f"HEAD is now at {sha[:7]}")      
         
 def _tree_to_index(repo, tree_sha, index, prefix):
@@ -1833,7 +1833,7 @@ def cmd_rebase(args):
         with open(repo_file(repo, "HEAD"), "w") as f:
             f.write(current_sha + "\n")
     
-    #reflog_append
+    reflog_append(repo, "HEAD", current_sha, f"rebase finished: returning to refs/heads/{active}")
     print(f"Successfully rebased and updated refs/heads/{active}.")
     
 argsp = argsubparser.add_parser("cherry-pick", help="Apply the changes introduced by an existing commit.")
@@ -2660,3 +2660,39 @@ def reflog_append(repo, ref, sha, message):
     author = gitpycconfig_user_get(gitpycconfig_read()) or "GitPyC <gitpyc@example.com>"
     with open(log_path, "a") as f:
         f.write(f"{prev_sha} {sha} {author} {ts} {tz}\t{message}\n")   
+
+argsp = argsubparser.add_parser("reflog", help="Manage reflog information")
+argsp.add_argument("ref", nargs="?", default="HEAD", help="Ref to show reflog for (default: HEAD)")
+argsp.add_argument("--all", action="store_true", help="Show all reflogs")
+
+def cmd_reflog(args):
+    repo = repo_find()
+    if args.all:
+        logs_dir = repo_path(repo, "logs")
+        if os.path.isdir(logs_dir):
+            for root, _, files in os.walk(logs_dir):
+                for fname in files:
+                    full = os.path.join(root, fname)
+                    rel = os.path.relpath(full, logs_dir)
+                    print(f"\n=== {rel} ===")
+                    _print_reflog(full)
+    else:
+        ref = args.ref
+        if ref == "HEAD":
+            log_path = repo_path(repo, "logs", "HEAD")
+        else:
+            log_path = repo_path(repo, "logs", ref)
+        if not os.path.exists(log_path):
+            print(f"No reflog for '{ref}'")
+            return
+        _print_reflog(log_path)
+
+def _print_reflog(log_path):
+    with open(log_path, "r") as f:
+        lines = f.readlines()
+    for i, line in enumerate(reversed(lines)):
+        parts = line.strip().split("\t", 1)
+        header = parts[0].split()
+        msg = parts[1] if len(parts) > 1 else "?"
+        new_sha = header[1] if len(header) > 1 else "?"
+        print(f"HEAD@{{{i}}} {new_sha[:7]} {msg}")
