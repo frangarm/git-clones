@@ -70,6 +70,7 @@ def main (argv=sys.argv[1:]):
         case "describe": cmd_describe(args)
         case "bisect": cmd_bisect(args)
         case "reflog": cmd_reflog(args)
+        case "clean": cmd_clean(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -2741,3 +2742,4 @@ def cmd_clean(args):
                         shutil.rmtree(full)
                         print(f"Removing {os.path.relpath(full, repo.worktree)}/")
                     dirs.remove(dname)
+
