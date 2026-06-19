@@ -73,6 +73,7 @@ def main (argv=sys.argv[1:]):
         case "clean": cmd_clean(args)
         case "gc": cmd_gc(args)
         case "fsck": cmd_fsck(args)
+        case "config": cmd_config(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -2865,3 +2866,56 @@ def cmd_fsck(args):
         print(f"Checked {total} objects. No errors found.")
     else:
         print(f"Checked {total} objects. {errors} error(s) found.")
+        
+argsp = argsubparser.add_parser("config", help="Get and set repository or global options.")
+argsp.add_argument("key", nargs="?", help="Config key (section.option)")
+argsp.add_argument("value", nargs="?", help="Value to set")
+argsp.add_argument("--global", dest="is_global", action="store_true", help="Use global config file")
+argsp.add_argument("--list", dest="list_all", action="store_true", help="List all config files")
+argsp.add_argument("--unset", dest="unset", action="store_true", help="Remove a config entry")
+
+def cmd_config(args):
+    if args.is_global:
+        xdg = os.environ.get("XDG_CONFIG_HOME", "~/.config")
+        config_path = os.path.expanduser(os.path.join(xdg, "git/config"))
+        os.makedirs(os.path.dirname(config_path), exist_ok=True)
+    else:
+        repo = repo_find()
+        config_path = repo_file(repo, "config")
+    config = configparser.ConfigParser()
+    config.read(config_path)
+    
+    if args.list_all:
+        for section in config.sections():
+            for key, val in config.items(section):
+                print(f"{section}.{key}={val}")
+        return
+    if not args.key:
+        print("Usage: gitpyc config [--global] [--list] [--unset] <section.key> [value]")
+        return
+    parts = args.key.split(".", 1)
+    if len(parts) != 2:
+        raise Exception("Key must be in the form 'section.option'")
+    section, option = parts
+    
+    if args.unset:
+        if config.has_option(section, option):
+            config.remove_option(section, option)
+            with open(config_path, "w") as f:
+                config.write(f)
+            print(f"Removed {args.key}")
+        else:
+            print(f"Key '{args.key}' not found.")
+        return
+
+    if args.value:
+        if not config.has_section(section):
+            config.add_section(section)
+        config.set(section, option, args.value)
+        with open(config_path, "w") as f:
+            config.write(f)
+    else:
+        if config.has_option(section, option):
+            print(config.get(section, option))
+        else:
+            raise Exception(f"Key '{args.key}' not found in config.")
