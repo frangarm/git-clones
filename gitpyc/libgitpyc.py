@@ -72,6 +72,7 @@ def main (argv=sys.argv[1:]):
         case "reflog": cmd_reflog(args)
         case "clean": cmd_clean(args)
         case "gc": cmd_gc(args)
+        case "fsck": cmd_fsck(args)
         case _: print("Unkown Command")
 
 class GitPyCRepository:
@@ -2817,3 +2818,50 @@ def _collect_all_ref_shas(repo):
             sha = f.read().strip()
         shas.add(sha)
     return shas
+
+argsp = argsubparser.add_parser("fsck", help="Verify the connectivity and validity of the objects in the database.")
+argsp.add_argument("--full", action="store_true", help="Check all objects, not just those reachable from refs")
+
+def cmd_fsck(args):
+    repo = repo_find()
+    errors = 0
+    total = 0
+    
+    objects_dir = os.path.join(repo.gitdir, "objects")
+    all_shas = []
+    for prefix in os.listdir(objects_dir):
+        if len(prefix) != 2:
+            continue
+        prefix_dir = os.path.join(objects_dir, prefix)
+        if not os.path.isdir(prefix_dir):
+            continue
+        for rest in os.listdir(prefix_dir):
+            all_shas.append(prefix + rest)
+    if not args.full:
+        all_shas = list(_collect_all_ref_shas(repo))
+    for sha in all_shas:
+        total += 1
+        try:
+            obj = object_read(repo, sha)
+            if obj is None:
+                print(f"error: object missing: {sha}")
+                errors += 1
+                continue
+            data = obj.serialize()
+            raw = obj.fmt + b' ' + str(len(data)).encode() + b'\x00' + data
+            computed = hashlib.sha1(raw).hexdigest()
+            if computed != sha:
+                print(f"error: sha1 mismatch for {sha}: computed {computed}")
+                errors += 1
+            if obj.fmt == b'commit':
+                tree_sha = obj.kvlm.get(b'tree', b'').decode("ascii")
+                if tree_sha and object_read(repo, tree_sha) is None:
+                    print(f"error: commit {sha[:7]} references missing tree {tree_sha[:7]}")
+                    errors += 1
+        except Exception as e:
+            print(f"error: reading {sha}: {e}")
+            errors += 1
+    if errors == 0:
+        print(f"Checked {total} objects. No errors found.")
+    else:
+        print(f"Checked {total} objects. {errors} error(s) found.")
