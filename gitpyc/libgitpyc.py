@@ -59,7 +59,6 @@ def main (argv=sys.argv[1:]):
         case "revert": cmd_revert(args)
         case "merge": cmd_merge(args)
         case "rebase": cmd_rebase(args)
-        case "stash": cmd_stash(args)
         case "remote": cmd_remote(args)
         case "clone": cmd_clone(args)
         case "fetch": cmd_fetch(args)
@@ -74,7 +73,7 @@ def main (argv=sys.argv[1:]):
         case "gc": cmd_gc(args)
         case "fsck": cmd_fsck(args)
         case "config": cmd_config(args)
-        case _: print("Unkown Command")
+        case _: print("Unknown command")
 
 class GitPyCRepository:
     #A GitPyC Repository
@@ -84,7 +83,7 @@ class GitPyCRepository:
     
     def __init__(self, path, force=False):
         self.worktree = path
-        self.gitdir = os.path.join(path, ".gitpyc")
+        self.gitdir = os.path.join(path, ".git")
         
         if not (force or os.path.isdir(self.gitdir)):
             raise Exception(f"Not a GitPyC Repository: {path}")
@@ -128,7 +127,7 @@ def repo_find(path=".", required=True):
     path = os.path.realpath(path)
     
     while True:
-        if os.path.isdir(os.path.join(path, ".gitpyc")):
+        if os.path.isdir(os.path.join(path, ".git")):
             return GitPyCRepository(path)
         parent = os.path.realpath(os.path.join(path, ".."))
         if parent == path:
@@ -182,7 +181,7 @@ argsp.add_argument("path", metavar="directory", nargs="?", default=".", help="Wh
 #Command that creates a GitPyC repository
 def cmd_init (args):
     repo_create(args.path)
-    print(f"Initialized empty GitPyC repository in {os.path.realpath(args.path)}/.gitpyc")  
+    print(f"Initialized empty GitPyC repository in {os.path.realpath(args.path)}/.git")  
     
 #Generic GitPyC Object class
 class GitPyCObject:
@@ -346,11 +345,11 @@ class GitPyCCommit(GitPyCObject):
         self.kvlm = dict()
 
 argsp = argsubparser.add_parser("log", help="Display history of a given commit.")
-argsp.add_argument("commit", default="Head", nargs="?")
+argsp.add_argument("commit", default="HEAD", nargs="?")
 
 def cmd_log(args):
     repo = repo_find()
-    print("diagraph gitpyclog{")
+    print("digraph gitpyclog{")
     print(" node[shape=rect]")
     log_graph(repo, object_find(repo, args.commit), set())
     print("}")
@@ -403,7 +402,7 @@ def cmd_shortlog(args):
         
         author_raw = commit.kvlm.get(b'author', b'Unknown').decode("utf8")
         #Author line: "Name <email> timestamp timezone"
-        m = re.match(r'^(.*?)\a+<', author_raw)
+        m = re.match(r'^(.*?)\s+<', author_raw)
         author = m.group(1) if m else author_raw
         msg = commit.kvlm[None].decode("utf8").strip().splitlines()[0]
         authors.setdefault(author, []).append(msg)
@@ -542,7 +541,7 @@ def tree_checkout(repo, tree, path):
         dest = os.path.join(path, item.path)
         
         if obj.fmt == b'tree':
-            os.mkdir(dest)
+            os.makedirs(dest, exist_ok=True)
             tree_checkout(repo, obj, dest)
         elif obj.fmt == b'blob':
             with open(dest, 'wb') as f:
@@ -750,7 +749,8 @@ def object_resolve(repo, name):
     if not name.strip():
         return None
     if name == "HEAD":
-        return [ref_resolve(repo, "HEAD")]
+        head = ref_resolve(repo, "HEAD")
+        return [head] if head else []
     if hashRE.match(name):
         name = name.lower()
         prefix = name[0:2]
@@ -808,7 +808,7 @@ def object_find(repo, name, fmt=None, follow=True):
                 f"Cannot follow {obj.fmt.decode()!r} object {sha} "
                 f"to type {fmt.decode()!r}")
 
-argsp = argparser.add_parser("rev-parse", help="Parse revision identifiers")
+argsp = argsubparser.add_parser("rev-parse", help="Parse revision identifiers")
 argsp.add_argument("--gitpyc-type", metavar="type", dest="type", choices=["blob", "commit", "tag", "tree"], default=None)
 argsp.add_argument("name")
 
@@ -906,7 +906,7 @@ def index_write(repo, index):
     with open(repo_file(repo, "index"), "wb") as f:
         f.write(b"DIRC")
         f.write(index.version.to_bytes(4, "big"))
-        f.write(len(index.entries)).to_bytes(4, "big")
+        f.write(len(index.entries).to_bytes(4, "big"))
         idx = 0
         
         for e in index.entries:
@@ -992,7 +992,7 @@ def gitpycignore_read(repo):
             ret.absolute.append(gitpycignore_parse(f.readlines()))
     
     config_home = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
-    global_file = os.path.join(config_home, "gitpyc/ignore")
+    global_file = os.path.join(config_home, "git/ignore")
     
     if os.path.exists(global_file):
         with open(global_file, "r") as f:
@@ -1001,7 +1001,7 @@ def gitpycignore_read(repo):
     index = index_read(repo)
     
     for entry in index.entries:
-        if entry.name == ".gitpycignore" or entry.name.endswith("/.gitpycignore"):
+        if entry.name == ".gitignore" or entry.name.endswith("/.gitignore"):
             dir_name = os.path.dirname(entry.name)
             contents = object_read(repo, entry.sha)
             lines = contents.blobdata.decode("utf8").splitlines()
@@ -1271,8 +1271,8 @@ def gitpycconfig_read():
     xdg = os.environ.get("XDG_CONFIG_HOME", "~/.config")
     
     config_files = [
-        os.path.expanduser(os.path.join(xdg, "gitpyc/config")),
-        os.path.expanduser("~/.gitpycconfig")
+        os.path.expanduser(os.path.join(xdg, "git/config")),
+        os.path.expanduser("~/.gitconfig")
     ]
     
     config = configparser.ConfigParser()
@@ -1298,7 +1298,7 @@ def commit_create(repo, tree, parent, author, timestamp, message):
         commit.kvlm[b"parent"] = parent.encode("ascii")
     
     message = message.strip() + "\n"
-    offset = int(timestamp.astimezon().utcoffset().total_seconds())
+    offset = int(timestamp.astimezone().utcoffset().total_seconds())
     hours = offset // 3600
     minutes = (offset % 3600) // 60
     tz = "{}{:02}{:02}".format("+" if offset >= 0 else "-", abs(hours), abs(minutes))
@@ -1334,7 +1334,7 @@ def cmd_commit(args):
             fd.write(commit + "\n")
     
     reflog_append(repo, "HEAD", commit, f"commit: {args.message.strip()}")
-    print(f"Successfully rebased and updated refs/heads/{active_branch}.")
+    print(f"[{active_branch or 'HEAD'} {commit[:7]}] {args.message.strip().splitlines()[0]}")
 
 argsp = argsubparser.add_parser("diff", help="Show changes between commits, commit and index, or index and worktree.")
 argsp.add_argument("a", nargs="?", default=None, help="First commit/tree (omit to diff index vs worktree)")
@@ -1488,7 +1488,7 @@ def _tree_to_index(repo, tree_sha, index, prefix):
             _tree_to_index(repo, leaf.sha, index, path)
         else:
             mode_int = int(leaf.mode, 8)
-            mode_type = mode_int >> 9
+            mode_type = mode_int >> 12
             mode_perms = mode_int & 0o777
             entry = GitPyCIndexEntry(
                 ctime=(0, 0), mtime=(0, 0), dev=0, ino=0,
@@ -1572,7 +1572,7 @@ def cmd_revert(args):
 
 argsp = argsubparser.add_parser("merge", help="Join two or more development histories together.")
 argsp.add_argument("branch", help="Branch (or commit) to merge into HEAD")
-argsp.add_argument("--no--ff", action="store_true", help="Create a merge commit even for fast-forward merges")
+argsp.add_argument("--no-ff", dest="no_ff", action="store_true", help="Create a merge commit even for fast-forward merges")
 
 def cmd_merge(args):
     repo = repo_find()
@@ -1770,7 +1770,7 @@ def cmd_rebase(args):
     
     while sha and sha != base:
         commits_to_replay.append(sha)
-        obj = object_find(repo, sha)
+        obj = object_read(repo, sha)
         
         if b'parent' not in obj.kvlm:
             break
@@ -1909,12 +1909,12 @@ def cmd_cherry_pick(args):
 
 argsp = argsubparser.add_parser("stash", help="Stash the changes in a dirty working tree.")
 stash_sub = argsp.add_subparsers(dest="stash_cmd")
-stash_sub = argsp.add_subparsers("push", help="Save changes to stash (default)")
-stash_sub = argsp.add_subparsers("pop", help="Apply and remove the latest stash")
-stash_sub = argsp.add_subparsers("apply", help="Apply the latest stash (keep it)")
-stash_sub = argsp.add_subparsers("list", help="List all stashes")
-stash_sub = argsp.add_subparsers("drop", help="Discard the latest stash")
-stash_sub = argsp.add_subparsers("clear", help="Remove all stashes")
+stash_sub.add_parser("push", help="Save changes to stash (default)")
+stash_sub.add_parser("pop", help="Apply and remove the latest stash")
+stash_sub.add_parser("apply", help="Apply the latest stash (keep it)")
+stash_sub.add_parser("list", help="List all stashes")
+stash_sub.add_parser("drop", help="Discard the latest stash")
+stash_sub.add_parser("clear", help="Remove all stashes")
 
 def cmd_stash(args):
     repo = repo_find()
@@ -1927,7 +1927,7 @@ def cmd_stash(args):
         case "drop":  stash_drop(repo)
         case "clear": stash_clear(repo)
     
-#Return list of stash Shas from .gitpyc/refs/stash (most recent first)
+#Return list of stash Shas from .git/refs/stash (most recent first)
 def _stash_list_shas(repo):
     stash_path = repo_file(repo, "refs/stash")
     
@@ -1948,10 +1948,10 @@ def _stash_list_shas(repo):
         if obj.fmt == b'commit' and b'parent' in obj.kvlm:
             p = obj.kvlm[b'parent']
             
-            if type(p) == list:
-                p = p[0]
-            
-            current = p.decode("ascii")
+            if type(p) == list and len(p) > 1:
+                current = p[1].decode("ascii")
+            else:
+                break
         else:
             break
     
@@ -2110,8 +2110,8 @@ def remote_remove(repo, name):
         raise Exception(f"No such remote: '{name}'")
     config.remove_section(section)
     with open(repo_file(repo, "config"), "w") as f:
-        config.write()
-    print(f"Rmoved remote: '{name}'")
+        config.write(f)
+    print(f"Removed remote: '{name}'")
 
 def remote_rename(repo, old_name, new_name):
     config = configparser.ConfigParser()
@@ -2157,7 +2157,8 @@ def cmd_clone(args):
         for f in files:
             src_f = os.path.join(root, f)
             rel = os.path.relpath(src_f, src_objects)
-            dst_f = os.path.join(dst_objects, exist_ok=True)
+            dst_f = os.path.join(dst_objects, rel)
+            os.makedirs(os.path.dirname(dst_f), exist_ok=True)
             shutil.copy2(src_f, dst_f)
     
     src_refs = ref_list(src_repo)
@@ -2166,11 +2167,11 @@ def cmd_clone(args):
         for k, v in refs.items():
             if type(v) == str:
                 ref_create(dst_repo, f"{prefix}/{k}"[5:], v)
-            else:
+            elif isinstance(v, dict):
                 copy_refs(v, f"{prefix}/{k}")
     copy_refs(src_refs)
     
-    remote_add(dst_repo, "origin", os.path.relpath(src))
+    remote_add(dst_repo, "origin", os.path.abspath(src))
     
     with open(os.path.join(src_repo.gitdir, "HEAD"), "r") as f:
         head = f.read()
@@ -2501,10 +2502,10 @@ def describe_commit(repo, sha, lightweight=False):
 argsp = argsubparser.add_parser("bisect", help="Use binary search to find a bug.")
 bisect_sub = argsp.add_subparsers(dest="bisect_cmd")
 bisect_sub.add_parser("start", help="Start bisect session")
-bisect_sub.add("good", help="Mark current commit as good")
-bisect_sub.add("bad", help="Mark current commit as bad")
-bisect_sub.add("reset", help="End bisect and return to original branch")
-bisect_sub.add("log", help="Show bisect log")
+bisect_sub.add_parser("good", help="Mark current commit as good")
+bisect_sub.add_parser("bad", help="Mark current commit as bad")
+bisect_sub.add_parser("reset", help="End bisect and return to original branch")
+bisect_sub.add_parser("log", help="Show bisect log")
 
 def cmd_bisect(args):
     repo = repo_find()
@@ -2516,8 +2517,8 @@ def cmd_bisect(args):
         case "log": bisect_log(repo)
         case _: print("Usage: gitpyc bisect {start|good|bad|reset|log}")
 
-BISECT_STATE_FILE = ".gitpyc/BISECT_STATE"
-BISECT_LOG_FILE = ".gitpyc/BISECT_LOG"
+BISECT_STATE_FILE = ".git/BISECT_STATE"
+BISECT_LOG_FILE = ".git/BISECT_LOG"
 
 def bisect_start(repo):
     sha = object_find(repo, "HEAD", fmt=b'commit')
@@ -2548,8 +2549,8 @@ def bisect_mark(repo, verdict):
         state["bad"] = current
     else:
         if current not in state["good"]:
-            state["good"].append(True)
-    with open(os.path.join(repo.gitdir, "BISECT_LOG", "a")) as f:
+            state["good"].append(current)
+    with open(os.path.join(repo.gitdir, "BISECT_LOG"), "a") as f:
         f.write(f"# gitpyc bisect {verdict}\n {current}\n")
     
     if state["bad"] and state["good"]:
@@ -2574,7 +2575,7 @@ def bisect_mark(repo, verdict):
                 f.write(next_sha + "\n")
             print(f"Bisecting: checking {next_sha[:7]}")
         else:
-            print(f"The fist bad commit is: {state['bad'][:7]}")
+            print(f"The first bad commit is: {state['bad'][:7]}")
     else:
         bisect_write_state(repo, state)
         print(f"Marked {current[:7]} as {verdict}. Need both a good and bad commit.")
@@ -2655,7 +2656,7 @@ def reflog_append(repo, ref, sha, message):
     prev_sha = "0" * 40
     if os.path.exists(log_path):
         with open(log_path, "r") as f:
-            lines = f.readline()
+            lines = f.readlines()
             if lines:
                 prev_sha = lines[-1].split()[1] if len(lines[-1].split()) > 1 else prev_sha
     ts  = int(datetime.now().timestamp())
@@ -2710,6 +2711,7 @@ argsp.add_argument("-d", action="store_true", help="Also remove untracked direct
 def cmd_clean(args):
     if not args.dry_run and not args.force:
         print("Use -n (--dry-run) to preview or -f (--force) to actually clean.")
+        return
     repo = repo_find()
     index = index_read(repo)
     ignore = gitpycignore_read(repo)
